@@ -48,7 +48,7 @@ class SimulationConfig:
     return self.nz * self.dz
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PMLConfig:
   """
   Configuration for Perfectly Matched Layers (PML).
@@ -66,11 +66,11 @@ class PMLConfig:
   width_x: int
   width_y: int
   strength: float = 1.0
-  order: float = 2.0
+  order: int = 2
   profile_type: Literal['polynomial'] = 'polynomial'
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SolverConfig:
   """
   Configuration for the numerical solver method.

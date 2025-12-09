@@ -29,8 +29,9 @@ def main():
   
   # 3. Random Medium
   key = jax.random.PRNGKey(42)
-  delta_n = random_medium(sim_config, correlation_length=2.0, strength=0.05, 
-                          key=key)
+  delta_n = random_medium(
+    sim_config, correlation_length=2.0, strength=0.05, key=key
+    )
   
   # Define refractive index function
   
