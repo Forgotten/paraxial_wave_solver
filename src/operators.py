@@ -16,7 +16,7 @@ def laplacian_fd_2nd(field: Field, dx: float, dy: float) -> Field:
     The Laplacian of the input field, same shape as input.
   """
   def d2_2nd(u: Field, h: float, axis: int) -> Field:
-    return ( jnp.roll(u, -1, axis=axis) - 
+    return ( jnp.roll(u, -1, axis=axis) + 
              -2 * u + 
              jnp.roll(u, 1, axis=axis)) / (h**2)
   

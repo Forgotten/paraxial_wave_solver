@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 import pytest
 from src.config import SimulationConfig, SolverConfig, PMLConfig
@@ -60,3 +61,33 @@ def test_pml_absorption():
   E_out = jnp.sum(jnp.abs(psi_final)**2)
   
   assert E_out < E_in
+
+def test_jit_consistency():
+  """Test that JIT-compiled solver produces same results as non-JIT."""
+  sim_config = SimulationConfig(
+    nx=32, ny=32, dx=0.2, dy=0.2, dz=0.2, nz=5, wavelength=1.0
+  )
+  pml_config = PMLConfig(width_x=0, width_y=0, strength=0.0)
+  solver_config = SolverConfig(method='finite_difference', fd_order=2, 
+                               stepper='rk4')
+  
+  x = jnp.arange(sim_config.nx) * sim_config.dx
+  y = jnp.arange(sim_config.ny) * sim_config.dy
+  X, Y = jnp.meshgrid(x, y, indexing='ij')
+  psi_0 = jnp.exp(-((X-3.2)**2 + (Y-3.2)**2))
+  
+  def n_ref_fn(z):
+    return jnp.ones((sim_config.nx, sim_config.ny))
+    
+  solver = ParaxialWaveSolver(sim_config, solver_config, pml_config, n_ref_fn)
+  
+  # Run with JIT (default)
+  psi_jit, _ = solver.solve(psi_0)
+  
+  # Run without JIT
+  with jax.disable_jit():
+    psi_no_jit, _ = solver.solve(psi_0)
+    
+  # Compare results
+  diff = jnp.linalg.norm(psi_jit - psi_no_jit)
+  assert diff < 1e-6

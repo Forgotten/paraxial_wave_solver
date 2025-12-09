@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 from jax import lax, jit
+from jax.tree_util import Partial
 from functools import partial
 from typing import Callable, Tuple, Any
 
@@ -26,20 +27,20 @@ def get_laplacian_fn(config: SolverConfig,
   if config.method == 'finite_difference':
     if config.compact:
       # Use the 9-point isotropic stencil
-      return partial(laplacian_fd_9point, dx=sim_config.dx, dy=sim_config.dy)
+      return Partial(laplacian_fd_9point, dx=sim_config.dx, dy=sim_config.dy)
 
     if config.fd_order == 2:
-      return partial(laplacian_fd_2nd, dx=sim_config.dx, dy=sim_config.dy)
+      return Partial(laplacian_fd_2nd, dx=sim_config.dx, dy=sim_config.dy)
     elif config.fd_order == 4:
-      return partial(laplacian_fd_4th, dx=sim_config.dx, dy=sim_config.dy)
+      return Partial(laplacian_fd_4th, dx=sim_config.dx, dy=sim_config.dy)
     elif config.fd_order == 6:
-      return partial(laplacian_fd_6th, dx=sim_config.dx, dy=sim_config.dy)
+      return Partial(laplacian_fd_6th, dx=sim_config.dx, dy=sim_config.dy)
     else:
       raise ValueError(f"Unsupported FD order: {config.fd_order}")
   elif config.method == 'spectral':
     kx, ky = get_spectral_k_grids(sim_config.nx, sim_config.ny, 
                                   sim_config.dx, sim_config.dy)
-    return partial(laplacian_spectral, kx_grid=kx, ky_grid=ky)
+    return Partial(laplacian_spectral, kx_grid=kx, ky_grid=ky)
   else:
     raise ValueError(f"Unsupported method: {config.method}")
 
@@ -140,7 +141,7 @@ def step_split_step(psi: Field, z: float, dz: float, k0: float, kx: Field,
   
   return psi
 
-@partial(jit, static_argnums=(3,))
+@jit
 def _solve_scan(psi_0: Field, zs: Field, dz: float, 
                 step_fn: Callable[[Field, float, float], Field]
                 ) -> Tuple[Field, Field]:
@@ -193,18 +194,28 @@ class ParaxialWaveSolver:
     # Pre-compute PML profile
     self.pml_profile = generate_pml_profile(sim_config, pml_config)
     
-    # Setup step function
+    # Wrap n_ref_fn in Partial if it's a plain function to ensure it's a valid 
+    # PyTree node (though Partial treats the func as static, which is what we 
+    # want for a pure function).
+    # Note: If n_ref_fn is already a Partial or JAX-compatible callable, 
+    # wrapping it again is harmless or we can leave it.
+    # For safety with JIT, we wrap it.
+    self.n_ref_fn_partial = Partial(n_ref_fn)
+    
+    # Setup step function using Partial to be JIT-friendly
     if (solver_config.method == 'spectral' and 
         solver_config.stepper == 'split_step'):
       kx, ky = get_spectral_k_grids(sim_config.nx, sim_config.ny, 
                                     sim_config.dx, sim_config.dy)
-      self.step_fn = partial(step_split_step, k0=sim_config.k0, kx=kx, ky=ky, 
-                             n_ref_fn=n_ref_fn, pml_profile=self.pml_profile)
+      self.step_fn = Partial(step_split_step, k0=sim_config.k0, kx=kx, ky=ky, 
+                             n_ref_fn=self.n_ref_fn_partial, 
+                             pml_profile=self.pml_profile)
     else:
       laplacian_fn = get_laplacian_fn(solver_config, sim_config)
-      rhs = partial(rhs_paraxial, laplacian_fn=laplacian_fn, k0=sim_config.k0, 
-                    n_ref_fn=n_ref_fn, pml_profile=self.pml_profile)
-      self.step_fn = partial(step_rk4, rhs_fn=rhs)
+      rhs = Partial(rhs_paraxial, laplacian_fn=laplacian_fn, k0=sim_config.k0, 
+                    n_ref_fn=self.n_ref_fn_partial, 
+                    pml_profile=self.pml_profile)
+      self.step_fn = Partial(step_rk4, rhs_fn=rhs)
 
   def solve(self, psi_0: Field) -> Tuple[Field, Field]:
     """
