@@ -6,14 +6,14 @@ from src.operators import laplacian_fd_2nd, laplacian_fd_4th, laplacian_fd_6th, 
 def test_laplacian_spectral_gaussian():
     """Test spectral Laplacian against analytical derivative of a Gaussian."""
     jax.config.update("jax_enable_x64", True)
-    Nx, Ny = 128, 128
+    nx, ny = 128, 128
     dx, dy = 0.1, 0.1
-    x = jnp.arange(Nx) * dx
-    y = jnp.arange(Ny) * dy
+    x = jnp.arange(nx) * dx
+    y = jnp.arange(ny) * dy
     X, Y = jnp.meshgrid(x, y, indexing='ij')
     
     # Gaussian center
-    x0, y0 = Nx*dx/2, Ny*dy/2
+    x0, y0 = nx*dx/2, ny*dy/2
     sigma = 0.5  # Smaller sigma to avoid boundary effects
     
     psi = jnp.exp(-((X-x0)**2 + (Y-y0)**2) / (2 * sigma**2))
@@ -23,7 +23,7 @@ def test_laplacian_spectral_gaussian():
     lap_analytical = ((X-x0)**2 / sigma**4 - 1/sigma**2) * psi + \
                      ((Y-y0)**2 / sigma**4 - 1/sigma**2) * psi
                      
-    kx, ky = get_spectral_k_grids(Nx, Ny, dx, dy)
+    kx, ky = get_spectral_k_grids(nx, ny, dx, dy)
     lap_num = laplacian_spectral(psi, kx, ky)
     
     # Error should be small (spectral accuracy)
@@ -42,8 +42,8 @@ def test_laplacian_fd_order():
         dxs = [0.2, 0.1, 0.05]
         
         for dx in dxs:
-            Nx = int(10 / dx)
-            x = jnp.arange(Nx) * dx
+            nx = int(10 / dx)
+            x = jnp.arange(nx) * dx
             # 1D test for simplicity, broadcast to 2D
             psi_1d = jnp.sin(2 * jnp.pi * x / 10) # Periodic
             psi = jnp.outer(psi_1d, psi_1d)
