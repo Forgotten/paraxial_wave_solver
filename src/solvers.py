@@ -145,8 +145,7 @@ def step_split_step(psi: Field, z: float, dz: float, k0: float, kx: Field,
 def _solve_scan(psi_0: Field, zs: Field, dz: float, 
                 step_fn: Callable[[Field, float, float], Field]
                 ) -> Tuple[Field, Field]:
-  """
-  JIT-compiled scan loop for efficient propagation.
+  """ JIT-compiled scan loop for efficient propagation.
   
   Args:
     psi_0: Initial field.
@@ -155,8 +154,9 @@ def _solve_scan(psi_0: Field, zs: Field, dz: float,
     step_fn: Stepper function.
     
   Returns:
-    psi_final: Field at the end of propagation.
-    psi_history: History of the field at each step.
+    A tuple containing:
+    - psi_final: Field at the end of propagation.
+    - psi_history: History of the field at each step.
   """
   def scan_body(carrier: Field, z: float) -> Tuple[Field, Field]:
     psi = carrier
@@ -198,8 +198,7 @@ class ParaxialWaveSolver:
     # PyTree node (though Partial treats the func as static, which is what we 
     # want for a pure function).
     # Note: If n_ref_fn is already a Partial or JAX-compatible callable, 
-    # wrapping it again is harmless or we can leave it.
-    # For safety with JIT, we wrap it.
+    # wrapping it again is harmless. For safety with JIT, we wrap it.
     self.n_ref_fn_partial = Partial(n_ref_fn)
     
     # Setup step function using Partial to be JIT-friendly
