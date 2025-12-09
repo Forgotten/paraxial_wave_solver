@@ -16,9 +16,11 @@ def laplacian_fd_2nd(field: Field, dx: float, dy: float) -> Field:
     The Laplacian of the input field, same shape as input.
   """
   # d2/dx2
-  d2x = (jnp.roll(field, -1, axis=0) - 2 * field + jnp.roll(field, 1, axis=0)) / (dx**2)
+  d2x = (jnp.roll(field, -1, axis=0) - 2 * field + 
+         jnp.roll(field, 1, axis=0)) / (dx**2)
   # d2/dy2
-  d2y = (jnp.roll(field, -1, axis=1) - 2 * field + jnp.roll(field, 1, axis=1)) / (dy**2)
+  d2y = (jnp.roll(field, -1, axis=1) - 2 * field + 
+         jnp.roll(field, 1, axis=1)) / (dy**2)
   return d2x + d2y
 
 def laplacian_fd_4th(field: Field, dx: float, dy: float) -> Field:
@@ -33,7 +35,8 @@ def laplacian_fd_4th(field: Field, dx: float, dy: float) -> Field:
   Returns:
     The Laplacian of the input field, same shape as input.
   """
-  # Coefficients for 4th order central difference: [-1/12, 4/3, -5/2, 4/3, -1/12]
+  # Coefficients for 4th order central difference: 
+  # [-1/12, 4/3, -5/2, 4/3, -1/12]
   
   def d2_4th(u: Field, h: float, axis: int) -> Field:
     return (-1/12 * jnp.roll(u, -2, axis=axis) + 
@@ -72,7 +75,8 @@ def laplacian_fd_6th(field: Field, dx: float, dy: float) -> Field:
 def laplacian_fd_9point(field: Field, dx: float, dy: float) -> Field:
   """
   Computes the 2D Laplacian using an isotropic 9-point stencil (compact 3x3).
-  This stencil includes cross-terms to improve isotropy compared to the 5-point stencil.
+  This stencil includes cross-terms to improve isotropy compared to the 
+  5-point stencil.
   
   Args:
     field: Input 2D field (nx, ny).
@@ -85,17 +89,21 @@ def laplacian_fd_9point(field: Field, dx: float, dy: float) -> Field:
   # Standard 9-point isotropic stencil for dx=dy=h:
   # L = Dxx + Dyy + (h^2/6) DxxDyy
   
-  Dxx_u = (jnp.roll(field, -1, axis=0) - 2 * field + jnp.roll(field, 1, axis=0)) / (dx**2)
-  Dyy_u = (jnp.roll(field, -1, axis=1) - 2 * field + jnp.roll(field, 1, axis=1)) / (dy**2)
+  Dxx_u = (jnp.roll(field, -1, axis=0) - 2 * field + 
+           jnp.roll(field, 1, axis=0)) / (dx**2)
+  Dyy_u = (jnp.roll(field, -1, axis=1) - 2 * field + 
+           jnp.roll(field, 1, axis=1)) / (dy**2)
   
   # Dxx Dyy u
   # We apply Dxx to Dyy_u
-  DxxDyy_u = (jnp.roll(Dyy_u, -1, axis=0) - 2 * Dyy_u + jnp.roll(Dyy_u, 1, axis=0)) / (dx**2)
+  DxxDyy_u = (jnp.roll(Dyy_u, -1, axis=0) - 2 * Dyy_u + 
+              jnp.roll(Dyy_u, 1, axis=0)) / (dx**2)
   
   # L = Dxx + Dyy + (dx**2/6) * DxxDyy (assuming dx~dy)
   return Dxx_u + Dyy_u + (dx**2 / 6.0) * DxxDyy_u
 
-def get_spectral_k_grids(nx: int, ny: int, dx: float, dy: float) -> Tuple[Field, Field]:
+def get_spectral_k_grids(nx: int, ny: int, dx: float, dy: float
+                        ) -> Tuple[Field, Field]:
   """
   Generates the wavenumber grids (kx, ky) for spectral methods.
   

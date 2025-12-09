@@ -54,11 +54,14 @@ class PMLConfig:
   Configuration for Perfectly Matched Layers (PML).
   
   Attributes:
-    width_x: Number of grid points for the PML region at the x-boundaries (both sides).
-    width_y: Number of grid points for the PML region at the y-boundaries (both sides).
+    width_x: Number of grid points for the PML region at the x-boundaries 
+             (both sides).
+    width_y: Number of grid points for the PML region at the y-boundaries 
+             (both sides).
     strength: Maximum absorption strength of the PML profile.
     order: Polynomial order of the PML absorption profile (typically 2.0).
-    profile_type: Type of PML profile (currently only 'polynomial' is supported).
+    profile_type: Type of PML profile (currently only 'polynomial' is 
+                  supported).
   """
   width_x: int
   width_y: int
@@ -74,8 +77,10 @@ class SolverConfig:
   
   Attributes:
     method: Spatial discretization method ('finite_difference' or 'spectral').
-    fd_order: Order of accuracy for finite difference method (2, 4, or 6). Ignored if method is 'spectral'.
-    compact: Whether to use compact finite difference stencils (only for fd_order=4).
+    fd_order: Order of accuracy for finite difference method (2, 4, or 6). 
+              Ignored if method is 'spectral'.
+    compact: Whether to use compact finite difference stencils (only for 
+             fd_order=4).
     stepper: Z-propagation stepping scheme ('rk4' or 'split_step'). 
              'split_step' is typically used with 'spectral' method.
   """

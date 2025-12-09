@@ -29,13 +29,15 @@ def main():
   
   # 3. Random Medium
   key = jax.random.PRNGKey(42)
-  delta_n = random_medium(sim_config, correlation_length=2.0, strength=0.05, key=key)
+  delta_n = random_medium(sim_config, correlation_length=2.0, strength=0.05, 
+                          key=key)
   
   # Define refractive index function
   
   def n_ref_fn(z):
     # Find index
-    idx = jnp.clip(jnp.round(z / sim_config.dz).astype(int), 0, sim_config.nz - 1)
+    idx = jnp.clip(jnp.round(z / sim_config.dz).astype(int), 0, 
+                   sim_config.nz - 1)
     return 1.0 + delta_n[:, :, idx]
     
   # 4. Run Simulation
@@ -53,7 +55,8 @@ def main():
   
   plt.subplot(1, 2, 1)
   extent = [0, sim_config.lz, 0, sim_config.lx]
-  plt.imshow(intensity_xz, extent=extent, origin='lower', cmap='inferno', aspect='auto')
+  plt.imshow(intensity_xz, extent=extent, origin='lower', cmap='inferno', 
+             aspect='auto')
   plt.colorbar(label='Intensity')
   plt.xlabel('z')
   plt.ylabel('x')
@@ -61,7 +64,8 @@ def main():
   
   plt.subplot(1, 2, 2)
   # Plot refractive index slice
-  plt.imshow(delta_n[:, center_y, :], extent=extent, origin='lower', cmap='gray', aspect='auto')
+  plt.imshow(delta_n[:, center_y, :], extent=extent, origin='lower', 
+             cmap='gray', aspect='auto')
   plt.colorbar(label='delta n')
   plt.xlabel('z')
   plt.ylabel('x')

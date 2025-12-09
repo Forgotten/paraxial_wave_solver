@@ -3,7 +3,9 @@ import jax.numpy as jnp
 from typing import Optional
 from .config import SimulationConfig, Field
 
-def gaussian_beam(sim_config: SimulationConfig, w0: float, x0: Optional[float] = None, y0: Optional[float] = None, kx0: float = 0.0, ky0: float = 0.0) -> Field:
+def gaussian_beam(sim_config: SimulationConfig, w0: float, 
+                  x0: Optional[float] = None, y0: Optional[float] = None, 
+                  kx0: float = 0.0, ky0: float = 0.0) -> Field:
   """
   Generates a Gaussian beam profile as an initial condition.
   
@@ -34,9 +36,11 @@ def gaussian_beam(sim_config: SimulationConfig, w0: float, x0: Optional[float] =
   psi = jnp.exp(-r2 / (w0**2)) * jnp.exp(1j * phase)
   return psi
 
-def random_medium(sim_config: SimulationConfig, correlation_length: float, strength: float, key: jax.Array) -> Field:
+def random_medium(sim_config: SimulationConfig, correlation_length: float, 
+                  strength: float, key: jax.Array) -> Field:
   """
-  Generates a random refractive index perturbation with a specified correlation length.
+  Generates a random refractive index perturbation with a specified correlation 
+  length.
   
   Uses Fourier filtering of white noise to generate a Gaussian random field.
   
@@ -47,7 +51,8 @@ def random_medium(sim_config: SimulationConfig, correlation_length: float, stren
     key: JAX random key for reproducibility.
   
   Returns:
-    delta_n: 3D array of shape (nx, ny, nz) containing the refractive index perturbations.
+    delta_n: 3D array of shape (nx, ny, nz) containing the refractive index 
+             perturbations.
   """
   # Generate white noise
   noise = jax.random.normal(key, (sim_config.nx, sim_config.ny, sim_config.nz))

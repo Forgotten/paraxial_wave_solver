@@ -46,7 +46,8 @@ def main():
   
   plt.figure(figsize=(10, 6))
   extent = [0, sim_config.lz, 0, sim_config.lx]
-  plt.imshow(intensity_xz, extent=extent, origin='lower', cmap='inferno', aspect='auto')
+  plt.imshow(intensity_xz, extent=extent, origin='lower', cmap='inferno', 
+             aspect='auto')
   plt.colorbar(label='Intensity')
   plt.xlabel('z')
   plt.ylabel('x')

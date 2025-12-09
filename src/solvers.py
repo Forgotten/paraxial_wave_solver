@@ -11,7 +11,8 @@ from .operators import (
 )
 from .pml import generate_pml_profile
 
-def get_laplacian_fn(config: SolverConfig, sim_config: SimulationConfig) -> Callable[[Field], Field]:
+def get_laplacian_fn(config: SolverConfig, 
+                     sim_config: SimulationConfig) -> Callable[[Field], Field]:
   """
   Returns the appropriate Laplacian function based on the solver configuration.
   
@@ -36,16 +37,21 @@ def get_laplacian_fn(config: SolverConfig, sim_config: SimulationConfig) -> Call
     else:
       raise ValueError(f"Unsupported FD order: {config.fd_order}")
   elif config.method == 'spectral':
-    kx, ky = get_spectral_k_grids(sim_config.nx, sim_config.ny, sim_config.dx, sim_config.dy)
+    kx, ky = get_spectral_k_grids(sim_config.nx, sim_config.ny, 
+                                  sim_config.dx, sim_config.dy)
     return partial(laplacian_spectral, kx_grid=kx, ky_grid=ky)
   else:
     raise ValueError(f"Unsupported method: {config.method}")
 
-def rhs_paraxial(psi: Field, z: float, laplacian_fn: Callable[[Field], Field], k0: float, n_ref_fn: Callable[[float], Field], pml_profile: Field) -> Field:
+def rhs_paraxial(psi: Field, z: float, laplacian_fn: Callable[[Field], Field], 
+                 k0: float, n_ref_fn: Callable[[float], Field], 
+                 pml_profile: Field) -> Field:
   """
   Computes the Right-Hand Side (RHS) of the Paraxial Wave Equation.
   
-  The equation is: 2ik0 dpsi/dz = -Laplacian_perp psi - k0^2(n^2 - 1) psi - 2ik0 sigma psi
+  The equation is: 
+  2ik0 dpsi/dz = -Laplacian_perp psi - k0^2(n^2 - 1) psi - 2ik0 sigma psi
+  
   Rearranging for dpsi/dz:
   dpsi/dz = (i/2k0) Laplacian_perp psi + (ik0/2)(n^2 - 1) psi - sigma psi
   
@@ -72,7 +78,8 @@ def rhs_paraxial(psi: Field, z: float, laplacian_fn: Callable[[Field], Field], k
   
   return term1 + term2 + term3
 
-def step_rk4(psi: Field, z: float, dz: float, rhs_fn: Callable[[Field, float], Field]) -> Field:
+def step_rk4(psi: Field, z: float, dz: float, 
+             rhs_fn: Callable[[Field, float], Field]) -> Field:
   """
   Performs a single z-step using the 4th-order Runge-Kutta method.
   
@@ -92,7 +99,9 @@ def step_rk4(psi: Field, z: float, dz: float, rhs_fn: Callable[[Field, float], F
   
   return psi + (dz / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
 
-def step_split_step(psi: Field, z: float, dz: float, k0: float, kx: Field, ky: Field, n_ref_fn: Callable[[float], Field], pml_profile: Field) -> Field:
+def step_split_step(psi: Field, z: float, dz: float, k0: float, kx: Field, 
+                    ky: Field, n_ref_fn: Callable[[float], Field], 
+                    pml_profile: Field) -> Field:
   """
   Performs a single z-step using the Split-Step Fourier method.
   
@@ -132,7 +141,9 @@ def step_split_step(psi: Field, z: float, dz: float, k0: float, kx: Field, ky: F
   return psi
 
 @partial(jit, static_argnums=(3,))
-def _solve_scan(psi_0: Field, zs: Field, dz: float, step_fn: Callable[[Field, float, float], Field]) -> Tuple[Field, Field]:
+def _solve_scan(psi_0: Field, zs: Field, dz: float, 
+                step_fn: Callable[[Field, float, float], Field]
+                ) -> Tuple[Field, Field]:
   """
   JIT-compiled scan loop for efficient propagation.
   
@@ -158,11 +169,13 @@ class ParaxialWaveSolver:
   """
   Solver for the Paraxial Wave Equation.
   
-  Encapsulates the simulation configuration, solver method, PML settings, and refractive index profile.
-  Provides a method to propagate an initial field through the medium.
+  Encapsulates the simulation configuration, solver method, PML settings, and 
+  refractive index profile. Provides a method to propagate an initial field 
+  through the medium.
   """
   
-  def __init__(self, sim_config: SimulationConfig, solver_config: SolverConfig, pml_config: PMLConfig, n_ref_fn: Callable[[float], Field]):
+  def __init__(self, sim_config: SimulationConfig, solver_config: SolverConfig, 
+               pml_config: PMLConfig, n_ref_fn: Callable[[float], Field]):
     """
     Initialize the solver.
     
@@ -181,12 +194,16 @@ class ParaxialWaveSolver:
     self.pml_profile = generate_pml_profile(sim_config, pml_config)
     
     # Setup step function
-    if solver_config.method == 'spectral' and solver_config.stepper == 'split_step':
-      kx, ky = get_spectral_k_grids(sim_config.nx, sim_config.ny, sim_config.dx, sim_config.dy)
-      self.step_fn = partial(step_split_step, k0=sim_config.k0, kx=kx, ky=ky, n_ref_fn=n_ref_fn, pml_profile=self.pml_profile)
+    if (solver_config.method == 'spectral' and 
+        solver_config.stepper == 'split_step'):
+      kx, ky = get_spectral_k_grids(sim_config.nx, sim_config.ny, 
+                                    sim_config.dx, sim_config.dy)
+      self.step_fn = partial(step_split_step, k0=sim_config.k0, kx=kx, ky=ky, 
+                             n_ref_fn=n_ref_fn, pml_profile=self.pml_profile)
     else:
       laplacian_fn = get_laplacian_fn(solver_config, sim_config)
-      rhs = partial(rhs_paraxial, laplacian_fn=laplacian_fn, k0=sim_config.k0, n_ref_fn=n_ref_fn, pml_profile=self.pml_profile)
+      rhs = partial(rhs_paraxial, laplacian_fn=laplacian_fn, k0=sim_config.k0, 
+                    n_ref_fn=n_ref_fn, pml_profile=self.pml_profile)
       self.step_fn = partial(step_rk4, rhs_fn=rhs)
 
   def solve(self, psi_0: Field) -> Tuple[Field, Field]:
@@ -211,7 +228,9 @@ class ParaxialWaveSolver:
     
     return psi_final, psi_history
 
-def propagate(psi_0: Field, sim_config: SimulationConfig, solver_config: SolverConfig, pml_config: PMLConfig, n_ref_fn: Callable[[float], Field]) -> Tuple[Field, Field]:
+def propagate(psi_0: Field, sim_config: SimulationConfig, 
+              solver_config: SolverConfig, pml_config: PMLConfig, 
+              n_ref_fn: Callable[[float], Field]) -> Tuple[Field, Field]:
   """
   Main propagation loop (Legacy wrapper).
   

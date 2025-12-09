@@ -1,19 +1,22 @@
 import jax.numpy as jnp
 from .config import SimulationConfig, PMLConfig, Field
 
-def generate_pml_profile(sim_config: SimulationConfig, pml_config: PMLConfig) -> Field:
+def generate_pml_profile(sim_config: SimulationConfig, 
+                         pml_config: PMLConfig) -> Field:
   """
-  Generates the complex Perfectly Matched Layer (PML) absorption profile sigma(x, y).
+  Generates the complex Perfectly Matched Layer (PML) absorption profile 
+  sigma(x, y).
   
-  The profile is zero in the physical domain and increases polynomially in the PML regions
-  at the boundaries.
+  The profile is zero in the physical domain and increases polynomially in the 
+  PML regions at the boundaries.
   
   Args:
     sim_config: Simulation configuration containing grid details.
     pml_config: PML configuration containing width, strength, and order.
     
   Returns:
-    sigma: Complex array of shape (nx, ny) representing the PML absorption profile.
+    sigma: Complex array of shape (nx, ny) representing the PML absorption 
+           profile.
   """
   
   x = jnp.arange(sim_config.nx) * sim_config.dx
@@ -29,7 +32,8 @@ def generate_pml_profile(sim_config: SimulationConfig, pml_config: PMLConfig) ->
   y_start_pml = pml_config.width_y * sim_config.dy
   y_end_pml = ly - pml_config.width_y * sim_config.dy
   
-  def sigma_1d(coord: Field, start: float, end: float, width_idx: int, d_step: float) -> Field:
+  def sigma_1d(coord: Field, start: float, end: float, width_idx: int, 
+               d_step: float) -> Field:
     # Distance into PML
     d_left = jnp.maximum(0.0, start - coord)
     d_right = jnp.maximum(0.0, coord - end)
@@ -42,11 +46,16 @@ def generate_pml_profile(sim_config: SimulationConfig, pml_config: PMLConfig) ->
     d_norm = d / l_pml
     
     # Polynomial profile
-    # If width is 0, d is 0, so result is 0 anyway, but we need to avoid NaN from 0/0
-    return jnp.where(width_idx > 0, pml_config.strength * (d_norm ** pml_config.order), 0.0)
+    # If width is 0, d is 0, so result is 0 anyway, but we need to avoid NaN 
+    # from 0/0
+    return jnp.where(width_idx > 0, 
+                     pml_config.strength * (d_norm ** pml_config.order), 
+                     0.0)
 
-  sigma_x = sigma_1d(x, x_start_pml, x_end_pml, pml_config.width_x, sim_config.dx)
-  sigma_y = sigma_1d(y, y_start_pml, y_end_pml, pml_config.width_y, sim_config.dy)
+  sigma_x = sigma_1d(x, x_start_pml, x_end_pml, pml_config.width_x, 
+                     sim_config.dx)
+  sigma_y = sigma_1d(y, y_start_pml, y_end_pml, pml_config.width_y, 
+                     sim_config.dy)
   
   # Combine x and y profiles
   sigma_grid_x, sigma_grid_y = jnp.meshgrid(sigma_x, sigma_y, indexing='ij')

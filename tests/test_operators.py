@@ -1,7 +1,10 @@
 import jax
 import jax.numpy as jnp
 import pytest
-from src.operators import laplacian_fd_2nd, laplacian_fd_4th, laplacian_fd_6th, laplacian_fd_9point, laplacian_spectral, get_spectral_k_grids
+from src.operators import (
+  laplacian_fd_2nd, laplacian_fd_4th, laplacian_fd_6th, laplacian_fd_9point, 
+  laplacian_spectral, get_spectral_k_grids
+)
 
 def test_laplacian_spectral_gaussian():
   """Test spectral Laplacian against analytical derivative of a Gaussian."""
@@ -28,7 +31,8 @@ def test_laplacian_spectral_gaussian():
   
   # Error should be small (spectral accuracy)
   # Note: Periodic boundaries assumed, Gaussian should decay to 0 at boundaries
-  err = jnp.linalg.norm(lap_num - lap_analytical) / jnp.linalg.norm(lap_analytical)
+  err = jnp.linalg.norm(lap_num - lap_analytical) / \
+        jnp.linalg.norm(lap_analytical)
   assert err < 1e-5
 
 def test_laplacian_fd_order():
@@ -36,7 +40,8 @@ def test_laplacian_fd_order():
   # We check if error decreases as expected when refining grid
   # 9-point stencil is 2nd order accurate (but isotropic)
   orders = [2, 4, 6, 2] 
-  funcs = [laplacian_fd_2nd, laplacian_fd_4th, laplacian_fd_6th, laplacian_fd_9point]
+  funcs = [laplacian_fd_2nd, laplacian_fd_4th, laplacian_fd_6th, 
+           laplacian_fd_9point]
   names = ["2nd", "4th", "6th", "9-point"]
   
   for order, func, name in zip(orders, funcs, names):
@@ -56,12 +61,14 @@ def test_laplacian_fd_order():
       
       lap_num = func(psi, dx, dx)
       
-      err = jnp.linalg.norm(lap_num - lap_analytical) / jnp.linalg.norm(lap_analytical)
+      err = jnp.linalg.norm(lap_num - lap_analytical) / \
+            jnp.linalg.norm(lap_analytical)
       errors.append(err)
       
     # Check convergence rate: log(err1/err2) / log(dx1/dx2) ~ order
     rate = jnp.log(errors[0]/errors[1]) / jnp.log(dxs[0]/dxs[1])
-    print(f"Scheme {name} (Expected Order {order}) measured rate: {rate}, Errors: {errors}")
-    # With x64, this should pass. With float32, high orders hit machine precision fast.
-    # We'll assert a bit loosely.
+    print(f"Scheme {name} (Expected Order {order}) measured rate: {rate}, "
+          f"Errors: {errors}")
+    # With x64, this should pass. With float32, high orders hit machine 
+    # precision fast. We'll assert a bit loosely.
     assert rate > order - 1.0
