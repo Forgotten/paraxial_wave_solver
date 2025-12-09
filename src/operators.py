@@ -15,13 +15,12 @@ def laplacian_fd_2nd(field: Field, dx: float, dy: float) -> Field:
   Returns:
     The Laplacian of the input field, same shape as input.
   """
-  # d2/dx2
-  d2x = (jnp.roll(field, -1, axis=0) - 2 * field + 
-         jnp.roll(field, 1, axis=0)) / (dx**2)
-  # d2/dy2
-  d2y = (jnp.roll(field, -1, axis=1) - 2 * field + 
-         jnp.roll(field, 1, axis=1)) / (dy**2)
-  return d2x + d2y
+  def d2_2nd(u: Field, h: float, axis: int) -> Field:
+    return ( jnp.roll(u, -1, axis=axis) - 
+             -2 * u + 
+             jnp.roll(u, 1, axis=axis)) / (h**2)
+  
+  return d2_2nd(field, dx, 0) + d2_2nd(field, dy, 1)
 
 def laplacian_fd_4th(field: Field, dx: float, dy: float) -> Field:
   """
@@ -88,6 +87,8 @@ def laplacian_fd_9point(field: Field, dx: float, dy: float) -> Field:
   """
   # Standard 9-point isotropic stencil for dx=dy=h:
   # L = Dxx + Dyy + (h^2/6) DxxDyy
+  if dx != dy:
+    raise ValueError("dx and dy must be equal for 9-point stencil.")
   
   Dxx_u = (jnp.roll(field, -1, axis=0) - 2 * field + 
            jnp.roll(field, 1, axis=0)) / (dx**2)
