@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paraxial-wave-solver"
+version = "0.1.0"
+description = "A JAX-based solver for the paraxial wave equation in 3D."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT License"}
+authors = [
+  {name = "Leonardo Zepeda-Nunez"}, 
+]
+dependencies = [
+    "jax",
+    "jaxlib",
+    "numpy",
+    "scipy",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
