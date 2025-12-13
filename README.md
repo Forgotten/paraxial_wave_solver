@@ -1,5 +1,7 @@
 # Paraxial Wave Solver
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Forgotten/paraxial_wave_solver/blob/main/examples/demo.ipynb)
+
 A JAX-based numerical solver for the Paraxial Wave Equation in 2D, designed for simulating optical beam propagation in vacuum and inhomogeneous media (e.g., turbulence).
 
 ## Features
@@ -75,9 +77,7 @@ Two example scripts are provided to demonstrate the solver's capabilities.
 
 ```python
 import jax.numpy as jnp
-from src.config import SimulationConfig, SolverConfig, PMLConfig
-from src.solvers import ParaxialWaveSolver
-from src.utils import gaussian_beam
+from src import SimulationConfig, SolverConfig, PMLConfig, ParaxialWaveSolver, gaussian_beam
 
 # Configure simulation.
 sim_config = SimulationConfig(

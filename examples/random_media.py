@@ -7,12 +7,17 @@ import sys
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.config import SimulationConfig, SolverConfig, PMLConfig
-from src.solvers import ParaxialWaveSolver
-from src.utils import gaussian_beam, random_medium
+from src import (
+    SimulationConfig, 
+    SolverConfig, 
+    PMLConfig, 
+    ParaxialWaveSolver, 
+    gaussian_beam, 
+    random_medium
+)
 
 def main():
-  # 1. Setup Configuration
+  # Setup Configuration.
   sim_config = SimulationConfig(
     nx=256, ny=256, 
     dx=0.2, dy=0.2, dz=0.25, 
@@ -23,31 +28,30 @@ def main():
   pml_config = PMLConfig(width_x=20, width_y=20, strength=5.0)
   solver_config = SolverConfig(method='spectral', stepper='split_step')
   
-  # 2. Initial Condition
+  # Initial Condition.
   w0 = 5.0
   psi_0 = gaussian_beam(sim_config, w0=w0)
   
-  # 3. Random Medium
+  # Random Medium.
   key = jax.random.PRNGKey(42)
   delta_n = random_medium(
     sim_config, correlation_length=2.0, strength=0.05, key=key
     )
   
-  # Define refractive index function
-  
+  # Define refractive index function.
   def n_ref_fn(z):
     # Find index
     idx = jnp.clip(jnp.round(z / sim_config.dz).astype(int), 0, 
                    sim_config.nz - 1)
     return 1.0 + delta_n[:, :, idx]
     
-  # 4. Run Simulation
+  # Run Simulation.
   print("Running simulation in random media...")
   solver = ParaxialWaveSolver(sim_config, solver_config, pml_config, n_ref_fn)
   psi_final, psi_history = solver.solve(psi_0)
   print("Simulation complete.")
   
-  # 5. Visualize
+  # Definng the visualization.
   center_y = sim_config.ny // 2
   field_xz = psi_history[:, :, center_y].T
   intensity_xz = jnp.abs(field_xz)**2
