@@ -80,24 +80,24 @@ Two example scripts are provided to demonstrate the solver's capabilities.
 
 ```python
 import jax.numpy as jnp
-from src import SimulationConfig, SolverConfig, PMLConfig, ParaxialWaveSolver, gaussian_beam
+import paraxial_wave_solver as pws
 
 # Configure simulation.
-sim_config = SimulationConfig(
+sim_config = pws.SimulationConfig(
     nx=256, ny=256, dx=0.5, dy=0.5, dz=1.0, nz=100, wavelength=1.0
 )
-solver_config = SolverConfig(method='spectral', stepper='split_step')
-pml_config = PMLConfig(width_x=20, width_y=20, strength=2.0)
+solver_config = pws.SolverConfig(method='spectral', stepper='split_step')
+pml_config = pws.PMLConfig(width_x=20, width_y=20, strength=2.0)
 
 # Define refractive index (vacuum).
 def n_ref_fn(z):
     return jnp.ones((sim_config.nx, sim_config.ny))
 
 # Initialize solver.
-solver = ParaxialWaveSolver(sim_config, solver_config, pml_config, n_ref_fn)
+solver = pws.ParaxialWaveSolver(sim_config, solver_config, pml_config, n_ref_fn)
 
 # Create initial condition.
-psi_0 = gaussian_beam(sim_config, w0=10.0)
+psi_0 = pws.gaussian_beam(sim_config, w0=10.0)
 
 # Run simulation.
 psi_final, psi_history = solver.solve(psi_0)

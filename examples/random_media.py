@@ -7,34 +7,27 @@ import sys
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from paraxial_wave_solver import (
-    SimulationConfig, 
-    SolverConfig, 
-    PMLConfig, 
-    ParaxialWaveSolver, 
-    gaussian_beam, 
-    random_medium
-)
+import paraxial_wave_solver as pws
 
 def main():
   # Setup Configuration.
-  sim_config = SimulationConfig(
+  sim_config = pws.SimulationConfig(
     nx=256, ny=256, 
     dx=0.2, dy=0.2, dz=0.25, 
     nz=200, 
     wavelength=1.0
   )
   
-  pml_config = PMLConfig(width_x=20, width_y=20, strength=5.0)
-  solver_config = SolverConfig(method='spectral', stepper='split_step')
+  pml_config = pws.PMLConfig(width_x=20, width_y=20, strength=5.0)
+  solver_config = pws.SolverConfig(method='spectral', stepper='split_step')
   
   # Initial Condition.
   w0 = 5.0
-  psi_0 = gaussian_beam(sim_config, w0=w0)
+  psi_0 = pws.gaussian_beam(sim_config, w0=w0)
   
   # Random Medium.
   key = jax.random.PRNGKey(42)
-  delta_n = random_medium(
+  delta_n = pws.random_medium(
     sim_config, correlation_length=2.0, strength=0.05, key=key
     )
   
@@ -47,7 +40,7 @@ def main():
     
   # Run Simulation.
   print("Running simulation in random media...")
-  solver = ParaxialWaveSolver(sim_config, solver_config, pml_config, n_ref_fn)
+  solver = pws.ParaxialWaveSolver(sim_config, solver_config, pml_config, n_ref_fn)
   psi_final, psi_history = solver.solve(psi_0)
   print("Simulation complete.")
   
