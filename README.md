@@ -18,21 +18,24 @@ A JAX-based numerical solver for the Paraxial Wave Equation in 2D, designed for 
 
 ```
 paraxial_wave_solver/
-├── src/                  # Source code
-│   ├── config.py         # Configuration dataclasses
-│   ├── operators.py      # Laplacian operators (FD and Spectral)
-│   ├── pml.py            # PML profile generation
-│   ├── solvers.py        # ParaxialWaveSolver class and propagation logic
-│   └── utils.py          # Utilities (Gaussian beam, random media)
-├── examples/             # Example scripts
-│   ├── simple_beam.py    # Gaussian beam in vacuum
-│   └── random_media.py   # Beam propagation in random media
-├── tests/                # Unit tests
-│   ├── test_operators.py # Tests for Laplacian operators
-│   └── test_solvers.py   # Tests for solver physics and numerics
-├── pyproject.toml        # Project metadata and dependencies
-├── requirements.txt      # Python dependencies
-└── LICENSE               # MIT License
+├── paraxial_wave_solver/   # Main package
+│   ├── __init__.py         # Exposes API
+│   ├── src/                # Source code
+│   │   ├── config.py       # Configuration dataclasses
+│   │   ├── operators.py    # Laplacian operators
+│   │   ├── pml.py          # PML profile generation
+│   │   ├── solvers.py      # Solver logic
+│   │   └── utils.py        # Utilities
+│   └── tests/              # Unit tests
+│       ├── test_operators.py
+│       └── test_solvers.py
+├── examples/               # Example scripts
+│   ├── demo.ipynb          # Jupyter notebook demo
+│   ├── simple_beam.py      # Gaussian beam example
+│   └── random_media.py     # Random media example
+├── pyproject.toml          # Project metadata
+├── requirements.txt        # Python dependencies
+└── LICENSE                 # MIT License
 ```
 
 ## Installation

@@ -7,7 +7,7 @@ import sys
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src import (
+from paraxial_wave_solver import (
     SimulationConfig, 
     SolverConfig, 
     PMLConfig, 

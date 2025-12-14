@@ -1,8 +1,8 @@
 import jax
 import jax.numpy as jnp
 import pytest
-from src.config import SimulationConfig, SolverConfig, PMLConfig
-from src.solvers import ParaxialWaveSolver
+from paraxial_wave_solver.src.config import SimulationConfig, SolverConfig, PMLConfig
+from paraxial_wave_solver.src.solvers import ParaxialWaveSolver
 
 def test_energy_conservation_vacuum():
   """Test that energy is conserved in vacuum (no PML)."""

@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 import pytest
-from src.operators import (
+from paraxial_wave_solver.src.operators import (
   laplacian_fd_2nd, laplacian_fd_4th, laplacian_fd_6th, laplacian_fd_9point, 
   laplacian_spectral, get_spectral_k_grids
 )
