@@ -3,11 +3,15 @@ import jax.numpy as jnp
 from typing import Optional
 from .config import SimulationConfig, Field
 
-def gaussian_beam(sim_config: SimulationConfig, w0: float, 
-                  x0: Optional[float] = None, y0: Optional[float] = None, 
-                  kx0: float = 0.0, ky0: float = 0.0) -> Field:
-  """
-  Generates a Gaussian beam profile as an initial condition.
+def gaussian_beam(
+  sim_config: SimulationConfig,
+  w0: float,
+  x0: Optional[float] = None,
+  y0: Optional[float] = None,
+  kx0: float = 0.0,
+  ky0: float = 0.0
+) -> Field:
+  """Generates a Gaussian beam profile as an initial condition.
   
   Args:
     sim_config: Simulation configuration.
@@ -36,13 +40,16 @@ def gaussian_beam(sim_config: SimulationConfig, w0: float,
   psi = jnp.exp(-r2 / (w0**2)) * jnp.exp(1j * phase)
   return psi
 
-def random_medium(sim_config: SimulationConfig, correlation_length: float, 
-                  strength: float, key: jax.Array) -> Field:
-  """
-  Generates a random refractive index perturbation with a specified correlation 
-  length.
+def random_medium(
+  sim_config: SimulationConfig,
+  correlation_length: float,
+  strength: float,
+  key: jax.Array
+) -> Field:
+  """Generates a random refractive index perturbation.
   
-  Uses Fourier filtering of white noise to generate a Gaussian random field.
+  Uses Fourier filtering of white noise to generate a Gaussian random field with a
+  specified correlation length.
   
   Args:
     sim_config: Simulation configuration.
@@ -54,7 +61,7 @@ def random_medium(sim_config: SimulationConfig, correlation_length: float,
     delta_n: 3D array of shape (nx, ny, nz) containing the refractive index 
              perturbations.
   """
-  # Generate white noise
+  # Generate white noise.
   noise = jax.random.normal(key, (sim_config.nx, sim_config.ny, sim_config.nz))
   
   # Filter in Fourier domain to impose correlation length
@@ -73,7 +80,7 @@ def random_medium(sim_config: SimulationConfig, correlation_length: float,
   filtered_noise_k = noise_k * jnp.sqrt(power_spectrum)
   delta_n = jnp.real(jnp.fft.ifftn(filtered_noise_k))
   
-  # Normalize to desired strength
+  # Normalize to desired strength.
   current_std = jnp.std(delta_n)
   delta_n = delta_n * (strength / current_std)
   

@@ -2,11 +2,11 @@
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Forgotten/paraxial_wave_solver/blob/main/examples/demo.ipynb)
 
-A JAX-based numerical solver for the Paraxial Wave Equation in 2D, designed for simulating optical beam propagation in vacuum and inhomogeneous media (e.g., turbulence).
+A JAX-based numerical solver for the Paraxial Wave Equation in 3D, with included examples for simulating optical beam propagation in vacuum and inhomogeneous media (e.g., turbulence).
 
 ## Features
 
-- **Modular Design:** Configurable simulation, solver, and PML settings via dataclasses.
+- **Modular Design:** Configurable simulation, solver, and PML settings via Python native dataclasses.
 - **High Performance:** JIT-compiled propagation loop using `jax.lax.scan` and `jax.jit`.
 - **Multiple Solvers:**
   - **Finite Difference:** 2nd, 4th, 6th order, and compact 9-point stencils.

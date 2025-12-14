@@ -7,8 +7,7 @@ Field: TypeAlias = jax.Array
 
 @dataclass(frozen=True)
 class SimulationConfig:
-  """
-  Configuration for the simulation grid and domain.
+  """Configuration for the simulation grid and domain.
   
   Attributes:
     nx: Number of grid points in the x-direction.
@@ -50,9 +49,8 @@ class SimulationConfig:
 
 @dataclass(frozen=True, slots=True)
 class PMLConfig:
-  """
-  Configuration for Perfectly Matched Layers (PML).
-  
+  """Configuration for Perfectly Matched Layers (PML).
+
   Attributes:
     width_x: Number of grid points for the PML region at the x-boundaries 
              (both sides).
@@ -72,8 +70,7 @@ class PMLConfig:
 
 @dataclass(frozen=True, slots=True)
 class SolverConfig:
-  """
-  Configuration for the numerical solver method.
+  """Configuration for the numerical solver method.
   
   Attributes:
     method: Spatial discretization method ('finite_difference' or 'spectral').

@@ -44,11 +44,14 @@ def get_laplacian_fn(config: SolverConfig,
   else:
     raise ValueError(f"Unsupported method: {config.method}")
 
-def rhs_paraxial(psi: Field, z: float, laplacian_fn: Callable[[Field], Field], 
-                 k0: float, n_ref_fn: Callable[[float], Field], 
-                 pml_profile: Field) -> Field:
-  """
-  Computes the Right-Hand Side (RHS) of the Paraxial Wave Equation.
+def rhs_paraxial(
+  psi: Field,
+  z: float,
+  laplacian_fn: Callable[[Field], Field],
+  k0: float,
+  n_ref_fn: Callable[[float], Field],
+  pml_profile: Field) -> Field:
+  """Computes the Right-Hand Side (RHS) of the Paraxial Wave Equation.
   
   The equation is: 
   2ik0 dpsi/dz = -Laplacian_perp psi - k0^2(n^2 - 1) psi - 2ik0 sigma psi
@@ -69,7 +72,7 @@ def rhs_paraxial(psi: Field, z: float, laplacian_fn: Callable[[Field], Field],
   """
   lap = laplacian_fn(psi)
   
-  # We assume n_ref_fn returns the refractive index grid at z
+  # We assume n_ref_fn returns the refractive index grid at z.
   n = n_ref_fn(z)
   chi = n**2 - 1.0
   
@@ -79,10 +82,12 @@ def rhs_paraxial(psi: Field, z: float, laplacian_fn: Callable[[Field], Field],
   
   return term1 + term2 + term3
 
-def step_rk4(psi: Field, z: float, dz: float, 
-             rhs_fn: Callable[[Field, float], Field]) -> Field:
-  """
-  Performs a single z-step using the 4th-order Runge-Kutta method.
+def step_rk4(
+  psi: Field,
+  z: float,
+  dz: float,
+  rhs_fn: Callable[[Field, float], Field]) -> Field:
+  """Performs a single z-step using the 4th-order Runge-Kutta method.
   
   Args:
     psi: Field at current z.
@@ -100,13 +105,19 @@ def step_rk4(psi: Field, z: float, dz: float,
   
   return psi + (dz / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
 
-def step_split_step(psi: Field, z: float, dz: float, k0: float, kx: Field, 
-                    ky: Field, n_ref_fn: Callable[[float], Field], 
-                    pml_profile: Field) -> Field:
-  """
-  Performs a single z-step using the Split-Step Fourier method.
+def step_split_step(
+  psi: Field,
+  z: float,
+  dz: float,
+  k0: float,
+  kx: Field,
+  ky: Field,
+  n_ref_fn: Callable[[float], Field],
+  pml_profile: Field) -> Field:
+  """Performs a single z-step using the Split-Step Fourier method.
   
-  Uses symmetric Strang splitting (2nd order accuracy in z):
+  Uses a symmetric Strang splitting (2nd order accuracy in z). Where
+  it follows the following steps:
   1. Half-step of nonlinear/potential operator (refraction + PML).
   2. Full-step of linear diffraction operator (in Fourier space).
   3. Half-step of nonlinear/potential operator.
@@ -142,10 +153,12 @@ def step_split_step(psi: Field, z: float, dz: float, k0: float, kx: Field,
   return psi
 
 @jit
-def _solve_scan(psi_0: Field, zs: Field, dz: float, 
-                step_fn: Callable[[Field, float, float], Field]
-                ) -> Tuple[Field, Field]:
-  """ JIT-compiled scan loop for efficient propagation.
+def _solve_scan(
+  psi_0: Field,
+  zs: Field,
+  dz: float,
+  step_fn: Callable[[Field, float, float], Field]) -> Tuple[Field, Field]:
+  """JIT-compiled scan loop for efficient propagation.
   
   Args:
     psi_0: Initial field.
@@ -175,10 +188,14 @@ class ParaxialWaveSolver:
   through the medium.
   """
   
-  def __init__(self, sim_config: SimulationConfig, solver_config: SolverConfig, 
-               pml_config: PMLConfig, n_ref_fn: Callable[[float], Field]):
-    """
-    Initialize the solver.
+  def __init__(
+    self,
+    sim_config: SimulationConfig,
+    solver_config: SolverConfig,
+    pml_config: PMLConfig,
+    n_ref_fn: Callable[[float], Field]
+  ):
+    """Initialize the solver.
     
     Args:
       sim_config: Simulation configuration.
@@ -217,8 +234,7 @@ class ParaxialWaveSolver:
       self.step_fn = Partial(step_rk4, rhs_fn=rhs)
 
   def solve(self, psi_0: Field) -> Tuple[Field, Field]:
-    """
-    Propagates the initial field psi_0 through the medium.
+    """Propagates the initial field psi_0 through the medium.
     
     Args:
       psi_0: Initial complex field amplitude at z=0.
@@ -238,11 +254,14 @@ class ParaxialWaveSolver:
     
     return psi_final, psi_history
 
-def propagate(psi_0: Field, sim_config: SimulationConfig, 
-              solver_config: SolverConfig, pml_config: PMLConfig, 
-              n_ref_fn: Callable[[float], Field]) -> Tuple[Field, Field]:
-  """
-  Main propagation loop (Legacy wrapper).
+def propagate(
+  psi_0: Field,
+  sim_config: SimulationConfig,
+  solver_config: SolverConfig,
+  pml_config: PMLConfig,
+  n_ref_fn: Callable[[float], Field]
+) -> Tuple[Field, Field]:
+  """Main propagation loop (Legacy wrapper).
   
   Args:
     psi_0: Initial field at z=0.

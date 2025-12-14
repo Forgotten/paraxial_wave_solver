@@ -4,8 +4,7 @@ from typing import Tuple
 from .config import Field
 
 def laplacian_fd_2nd(field: Field, dx: float, dy: float) -> Field:
-  """
-  Computes the 2D Laplacian using a 2nd-order central finite difference scheme.
+  """Computes the 2D Laplacian using a 2nd-order finite difference scheme.
   
   Args:
     field: Input 2D field array of shape (nx, ny).
@@ -23,8 +22,7 @@ def laplacian_fd_2nd(field: Field, dx: float, dy: float) -> Field:
   return d2_2nd(field, dx, 0) + d2_2nd(field, dy, 1)
 
 def laplacian_fd_4th(field: Field, dx: float, dy: float) -> Field:
-  """
-  Computes the 2D Laplacian using a 4th-order central finite difference scheme.
+  """Computes the 2D Laplacian using a 4th-order finite difference scheme.
   
   Args:
     field: Input 2D field array of shape (nx, ny).
@@ -47,8 +45,7 @@ def laplacian_fd_4th(field: Field, dx: float, dy: float) -> Field:
   return d2_4th(field, dx, 0) + d2_4th(field, dy, 1)
 
 def laplacian_fd_6th(field: Field, dx: float, dy: float) -> Field:
-  """
-  Computes the 2D Laplacian using a 6th-order central finite difference scheme.
+  """Computes the 2D Laplacian using a 6th-order finite difference scheme.
   
   Args:
     field: Input 2D field array of shape (nx, ny).
@@ -72,16 +69,16 @@ def laplacian_fd_6th(field: Field, dx: float, dy: float) -> Field:
   return d2_6th(field, dx, 0) + d2_6th(field, dy, 1)
 
 def laplacian_fd_9point(field: Field, dx: float, dy: float) -> Field:
-  """
-  Computes the 2D Laplacian using an isotropic 9-point stencil (compact 3x3).
+  """Computes the 2D Laplacian using an isotropic 9-point stencil (compact 3x3).
+
   This stencil includes cross-terms to improve isotropy compared to the 
   5-point stencil.
-  
+
   Args:
     field: Input 2D field (nx, ny).
     dx: Grid spacing in x.
     dy: Grid spacing in y.
-    
+
   Returns:
     The Laplacian of the field.
   """
@@ -95,18 +92,16 @@ def laplacian_fd_9point(field: Field, dx: float, dy: float) -> Field:
   Dyy_u = (jnp.roll(field, -1, axis=1) - 2 * field + 
            jnp.roll(field, 1, axis=1)) / (dy**2)
   
-  # Dxx Dyy u
   # We apply Dxx to Dyy_u
   DxxDyy_u = (jnp.roll(Dyy_u, -1, axis=0) - 2 * Dyy_u + 
               jnp.roll(Dyy_u, 1, axis=0)) / (dx**2)
   
-  # L = Dxx + Dyy + (dx**2/6) * DxxDyy (assuming dx~dy)
+  # L = Dxx + Dyy + (dx**2/6) * DxxDyy (assuming dx=dy).
   return Dxx_u + Dyy_u + (dx**2 / 6.0) * DxxDyy_u
 
 def get_spectral_k_grids(nx: int, ny: int, dx: float, dy: float
                         ) -> Tuple[Field, Field]:
-  """
-  Generates the wavenumber grids (kx, ky) for spectral methods.
+  """Generates the wavenumber grids (kx, ky) for spectral methods.
   
   Args:
     nx: Number of grid points in the x-direction.
@@ -122,8 +117,7 @@ def get_spectral_k_grids(nx: int, ny: int, dx: float, dy: float
   return jnp.meshgrid(kx, ky, indexing='ij')
 
 def laplacian_spectral(field: Field, kx_grid: Field, ky_grid: Field) -> Field:
-  """
-  Computes the 2D Laplacian using the pseudo-spectral method (FFT).
+  """Computes the 2D Laplacian using the pseudo-spectral method (FFT).
   
   Args:
     field: Input 2D field array of shape (nx, ny).
