@@ -142,10 +142,10 @@ def main():
   sim_config = pws.SimulationConfig(
     nx=1024,
     ny=1024,
+    nz=200,
     dx=0.1,
     dy=0.1,
     dz=0.5,
-    nz=200,
     wavelength=1.0
   )
   

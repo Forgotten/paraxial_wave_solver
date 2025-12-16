@@ -12,15 +12,16 @@ from .operators import (
 )
 from .pml import generate_pml_profile
 
-def get_laplacian_fn(config: SolverConfig, 
-                     sim_config: SimulationConfig) -> Callable[[Field], Field]:
-  """
-  Returns the appropriate Laplacian function based on the solver configuration.
-  
+def get_laplacian_fn(
+  config: SolverConfig,
+  sim_config: SimulationConfig
+) -> Callable[[Field], Field]:
+  """Returns the appropriate Laplacian based on the solver configuration.
+
   Args:
     config: Solver configuration specifying the method and order.
     sim_config: Simulation configuration specifying grid parameters.
-    
+
   Returns:
     A callable that takes a Field and returns its Laplacian as a Field.
   """
@@ -223,14 +224,23 @@ class ParaxialWaveSolver:
         solver_config.stepper == 'split_step'):
       kx, ky = get_spectral_k_grids(sim_config.nx, sim_config.ny, 
                                     sim_config.dx, sim_config.dy)
-      self.step_fn = Partial(step_split_step, k0=sim_config.k0, kx=kx, ky=ky, 
-                             n_ref_fn=self.n_ref_fn_partial, 
-                             pml_profile=self.pml_profile)
+      self.step_fn = Partial(
+        step_split_step,
+        k0=sim_config.k0,
+        kx=kx,
+        ky=ky,
+        n_ref_fn=self.n_ref_fn_partial,
+        pml_profile=self.pml_profile
+      )
     else:
       laplacian_fn = get_laplacian_fn(solver_config, sim_config)
-      rhs = Partial(rhs_paraxial, laplacian_fn=laplacian_fn, k0=sim_config.k0, 
-                    n_ref_fn=self.n_ref_fn_partial, 
-                    pml_profile=self.pml_profile)
+      rhs = Partial(
+        rhs_paraxial,
+        laplacian_fn=laplacian_fn,
+        k0=sim_config.k0,
+        n_ref_fn=self.n_ref_fn_partial,
+        pml_profile=self.pml_profile
+      )
       self.step_fn = Partial(step_rk4, rhs_fn=rhs)
 
   def solve(self, psi_0: Field) -> Tuple[Field, Field]:
