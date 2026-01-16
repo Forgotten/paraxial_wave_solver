@@ -1,8 +1,9 @@
+
 import jax.numpy as jnp
 from jax import lax, jit
 from jax.tree_util import Partial
 from functools import partial
-from typing import Callable, Tuple, Any
+from typing import Callable, Tuple, Any, Dict, Optional, Union
 
 from .config import SimulationConfig, SolverConfig, PMLConfig, Field
 from .operators import (
@@ -14,7 +15,8 @@ from .pml import generate_pml_profile
 
 def get_laplacian_fn(
   config: SolverConfig,
-  sim_config: SimulationConfig
+  sim_config: SimulationConfig,
+  pml_params: Optional[Dict[str, Field]] = None
 ) -> Callable[[Field], Field]:
   """Returns the appropriate Laplacian based on the solver configuration.
 
@@ -31,11 +33,11 @@ def get_laplacian_fn(
       return Partial(laplacian_fd_9point, dx=sim_config.dx, dy=sim_config.dy)
 
     if config.fd_order == 2:
-      return Partial(laplacian_fd_2nd, dx=sim_config.dx, dy=sim_config.dy)
+      return Partial(laplacian_fd_2nd, dx=sim_config.dx, dy=sim_config.dy, pml_params=pml_params)
     elif config.fd_order == 4:
-      return Partial(laplacian_fd_4th, dx=sim_config.dx, dy=sim_config.dy)
+      return Partial(laplacian_fd_4th, dx=sim_config.dx, dy=sim_config.dy, pml_params=pml_params)
     elif config.fd_order == 6:
-      return Partial(laplacian_fd_6th, dx=sim_config.dx, dy=sim_config.dy)
+      return Partial(laplacian_fd_6th, dx=sim_config.dx, dy=sim_config.dy, pml_params=pml_params)
     else:
       raise ValueError(f"Unsupported FD order: {config.fd_order}")
   elif config.method == 'spectral':
@@ -209,9 +211,23 @@ class ParaxialWaveSolver:
     self.pml_config = pml_config
     self.n_ref_fn = n_ref_fn
     
-    # Pre-compute PML profile
-    self.pml_profile = generate_pml_profile(sim_config, pml_config)
+    # Pre-compute PML data
+    pml_data = generate_pml_profile(sim_config, pml_config)
     
+    pml_params = None
+    absorbing_profile = None
+
+    if isinstance(pml_data, dict):
+        # Using Complex Coordinate Stretching
+        pml_params = pml_data
+        # Set absorbing potential to zero since absorption is in the operator
+        absorbing_profile = jnp.zeros((sim_config.nx, sim_config.ny))
+    else:
+        # Standard absorbing potential (or spectral)
+        absorbing_profile = pml_data
+    
+    self.pml_profile = absorbing_profile
+
     # Wrap n_ref_fn in Partial if it's a plain function to ensure it's a valid 
     # PyTree node (though Partial treats the func as static, which is what we 
     # want for a pure function).
@@ -224,16 +240,26 @@ class ParaxialWaveSolver:
         solver_config.stepper == 'split_step'):
       kx, ky = get_spectral_k_grids(sim_config.nx, sim_config.ny, 
                                     sim_config.dx, sim_config.dy)
+      
+      # For spectral, we currently fallback to absorbing layer even if stretching was requested?
+      # Spectral method with coordinate stretching is different (requires deformed Fourier transform).
+      # We'll use the 'sigma_sum' from the dict if available for the absorbing layer.
+      
+      absorption = self.pml_profile
+      if isinstance(pml_data, dict):
+          # Fallback for spectral: use the scalar profile
+          absorption = pml_data['sigma_sum']
+
       self.step_fn = Partial(
         step_split_step,
         k0=sim_config.k0,
         kx=kx,
         ky=ky,
         n_ref_fn=self.n_ref_fn_partial,
-        pml_profile=self.pml_profile
+        pml_profile=absorption
       )
     else:
-      laplacian_fn = get_laplacian_fn(solver_config, sim_config)
+      laplacian_fn = get_laplacian_fn(solver_config, sim_config, pml_params=pml_params)
       rhs = Partial(
         rhs_paraxial,
         laplacian_fn=laplacian_fn,

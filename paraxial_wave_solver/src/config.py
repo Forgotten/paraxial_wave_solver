@@ -66,6 +66,7 @@ class PMLConfig:
   strength: float = 1.0
   order: int = 2
   profile_type: Literal['polynomial'] = 'polynomial'
+  use_complex_stretching: bool = False
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,9 +1,73 @@
 import jax.numpy as jnp
 from jax import lax
-from typing import Tuple
+from typing import Tuple, Optional, Dict
 from .config import Field
 
-def laplacian_fd_2nd(field: Field, dx: float, dy: float) -> Field:
+def d1_2nd(u: Field, h: float, axis: int) -> Field:
+  return (jnp.roll(u, -1, axis=axis) - jnp.roll(u, 1, axis=axis)) / (2 * h)
+
+def d1_4th(u: Field, h: float, axis: int) -> Field:
+  return (-jnp.roll(u, -2, axis=axis) + 
+          8 * jnp.roll(u, -1, axis=axis) - 
+          8 * jnp.roll(u, 1, axis=axis) + 
+          jnp.roll(u, 2, axis=axis)) / (12 * h)
+
+def d1_6th(u: Field, h: float, axis: int) -> Field:
+  return ( 1/60 * jnp.roll(u, -3, axis=axis) - 
+           3/20 * jnp.roll(u, -2, axis=axis) + 
+           3/4  * jnp.roll(u, -1, axis=axis) - 
+           3/4  * jnp.roll(u, 1, axis=axis) + 
+           3/20 * jnp.roll(u, 2, axis=axis) - 
+           1/60 * jnp.roll(u, 3, axis=axis)) / h
+
+def d2_2nd(u: Field, h: float, axis: int) -> Field:
+  return ( jnp.roll(u, -1, axis=axis) + 
+           -2 * u + 
+           jnp.roll(u, 1, axis=axis)) / (h**2)
+
+def d2_4th(u: Field, h: float, axis: int) -> Field:
+  return (-1/12 * jnp.roll(u, -2, axis=axis) + 
+           4/3  * jnp.roll(u, -1, axis=axis) - 
+           5/2  * u + 
+           4/3  * jnp.roll(u, 1, axis=axis) - 
+           1/12 * jnp.roll(u, 2, axis=axis)) / (h**2)
+
+def d2_6th(u: Field, h: float, axis: int) -> Field:
+  return ( 1/90 * jnp.roll(u, -3, axis=axis) - 
+           3/20 * jnp.roll(u, -2, axis=axis) + 
+           3/2  * jnp.roll(u, -1, axis=axis) - 
+           49/18 * u + 
+           3/2  * jnp.roll(u, 1, axis=axis) - 
+           3/20 * jnp.roll(u, 2, axis=axis) + 
+           1/90 * jnp.roll(u, 3, axis=axis)) / (h**2)
+
+def apply_stretched_op(
+    u: Field, 
+    d2_fn, 
+    d1_fn, 
+    h: float, 
+    axis: int,
+    s: Optional[Field] = None, 
+    s_prime: Optional[Field] = None
+) -> Field:
+  """Applies the stretched derivative operator: (1/s) d/dx ((1/s) d/dx u).
+  
+  Expands to: (1/s^2) d^2u/dx^2 - (s'/s^3) du/dx
+  """
+  d2_u = d2_fn(u, h, axis)
+  if s is None:
+    return d2_u
+    
+  d1_u = d1_fn(u, h, axis)
+  
+  # s and s_prime are assumed to be 2D fields matching u's shape
+  term1 = (1.0 / (s**2)) * d2_u
+  term2 = (s_prime / (s**3)) * d1_u
+  
+  return term1 - term2
+
+def laplacian_fd_2nd(field: Field, dx: float, dy: float, 
+                     pml_params: Optional[Dict[str, Field]] = None) -> Field:
   """Computes the 2D Laplacian using a 2nd-order finite difference scheme.
   
   Args:
@@ -19,9 +83,17 @@ def laplacian_fd_2nd(field: Field, dx: float, dy: float) -> Field:
              -2 * u + 
              jnp.roll(u, 1, axis=axis)) / (h**2)
   
-  return d2_2nd(field, dx, 0) + d2_2nd(field, dy, 1)
+  if pml_params:
+      Lx = apply_stretched_op(field, d2_2nd, d1_2nd, dx, 0, 
+                              pml_params['sx'], pml_params['sx_prime'])
+      Ly = apply_stretched_op(field, d2_2nd, d1_2nd, dy, 1, 
+                              pml_params['sy'], pml_params['sy_prime'])
+      return Lx + Ly
+  else:
+      return d2_2nd(field, dx, 0) + d2_2nd(field, dy, 1)
 
-def laplacian_fd_4th(field: Field, dx: float, dy: float) -> Field:
+def laplacian_fd_4th(field: Field, dx: float, dy: float,
+                     pml_params: Optional[Dict[str, Field]] = None) -> Field:
   """Computes the 2D Laplacian using a 4th-order finite difference scheme.
   
   Args:
@@ -35,16 +107,17 @@ def laplacian_fd_4th(field: Field, dx: float, dy: float) -> Field:
   # Coefficients for 4th order central difference: 
   # [-1/12, 4/3, -5/2, 4/3, -1/12]
   
-  def d2_4th(u: Field, h: float, axis: int) -> Field:
-    return (-1/12 * jnp.roll(u, -2, axis=axis) + 
-             4/3  * jnp.roll(u, -1, axis=axis) - 
-             5/2  * u + 
-             4/3  * jnp.roll(u, 1, axis=axis) - 
-             1/12 * jnp.roll(u, 2, axis=axis)) / (h**2)
+  if pml_params:
+      Lx = apply_stretched_op(field, d2_4th, d1_4th, dx, 0, 
+                              pml_params['sx'], pml_params['sx_prime'])
+      Ly = apply_stretched_op(field, d2_4th, d1_4th, dy, 1, 
+                              pml_params['sy'], pml_params['sy_prime'])
+      return Lx + Ly
+  else:
+      return d2_4th(field, dx, 0) + d2_4th(field, dy, 1)
 
-  return d2_4th(field, dx, 0) + d2_4th(field, dy, 1)
-
-def laplacian_fd_6th(field: Field, dx: float, dy: float) -> Field:
+def laplacian_fd_6th(field: Field, dx: float, dy: float,
+                     pml_params: Optional[Dict[str, Field]] = None) -> Field:
   """Computes the 2D Laplacian using a 6th-order finite difference scheme.
   
   Args:
@@ -57,18 +130,17 @@ def laplacian_fd_6th(field: Field, dx: float, dy: float) -> Field:
   """
   # Coefficients: [1/90, -3/20, 3/2, -49/18, 3/2, -3/20, 1/90]
   
-  def d2_6th(u: Field, h: float, axis: int) -> Field:
-    return ( 1/90 * jnp.roll(u, -3, axis=axis) - 
-             3/20 * jnp.roll(u, -2, axis=axis) + 
-             3/2  * jnp.roll(u, -1, axis=axis) - 
-             49/18 * u + 
-             3/2  * jnp.roll(u, 1, axis=axis) - 
-             3/20 * jnp.roll(u, 2, axis=axis) + 
-             1/90 * jnp.roll(u, 3, axis=axis)) / (h**2)
+  if pml_params:
+      Lx = apply_stretched_op(field, d2_6th, d1_6th, dx, 0, 
+                              pml_params['sx'], pml_params['sx_prime'])
+      Ly = apply_stretched_op(field, d2_6th, d1_6th, dy, 1, 
+                              pml_params['sy'], pml_params['sy_prime'])
+      return Lx + Ly
+  else:
+      return d2_6th(field, dx, 0) + d2_6th(field, dy, 1)
 
-  return d2_6th(field, dx, 0) + d2_6th(field, dy, 1)
-
-def laplacian_fd_9point(field: Field, dx: float, dy: float) -> Field:
+def laplacian_fd_9point(field: Field, dx: float, dy: float,
+                        pml_params: Optional[Dict[str, Field]] = None) -> Field:
   """Computes the 2D Laplacian using an isotropic 9-point stencil (compact 3x3).
 
   This stencil includes cross-terms to improve isotropy compared to the 
@@ -84,6 +156,10 @@ def laplacian_fd_9point(field: Field, dx: float, dy: float) -> Field:
   """
   # Standard 9-point isotropic stencil for dx=dy=h:
   # L = Dxx + Dyy + (h^2/6) DxxDyy
+  
+  if pml_params:
+    raise NotImplementedError("Complex coordinate stretching not yet implemented for 9-point stencil.")
+
   if dx != dy:
     raise ValueError("dx and dy must be equal for 9-point stencil.")
   
