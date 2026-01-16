@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import os
 import sys
 from scipy.special import genlaguerre
+from math import factorial
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -46,16 +47,22 @@ def get_laguerre_gaussian_analytical(
   arg = 2 * r2 / w_z**2
   Lpl = jnp.polyval(jnp.array(genlaguerre(p, abs(l)).coef), arg)
   
-  # Amplitude terms
+  # Amplitude terms.
   # term: (r * sqrt(2) / w(z))^|l|
   term_r = (r * jnp.sqrt(2) / w_z)**abs(l)
   
-  amplitude = (w0 / w_z) * term_r * Lpl * jnp.exp(-r2 / w_z**2)
+  # Normalization Constant: sqrt(2 * p! / (pi * (p + |l|)!))
+  norm_factor = jnp.sqrt(2 * factorial(p) / (jnp.pi * factorial(p + abs(l))))
+  
+  amplitude = norm_factor * (w0 / w_z) * term_r * Lpl * jnp.exp(-r2 / w_z**2)
   
   # Phase terms
   # Gouy phase: (2p + |l| + 1) * zeta_z
   gouy_phase = (2 * p + abs(l) + 1) * zeta_z
   
+  # Propagation phase
+  propagation_phase = k0 * z
+
   # Curvature phase: k * r^2 / 2R
   curvature_phase = k0 * r2 / (2 * R_z) if z != 0 else 0.0
   
@@ -66,11 +73,14 @@ def get_laguerre_gaussian_analytical(
   psi = amplitude * \
         jnp.exp(1j * curvature_phase) * \
         jnp.exp(-1j * gouy_phase) * \
-        jnp.exp(1j * azimuthal_phase)
+        jnp.exp(1j * azimuthal_phase) * \
+        jnp.exp(1j * propagation_phase)
   
   return psi
 
-def main():
+def run_simulation(p_mode, l_mode, output_filename, title_suffix=""):
+  """Runs the simulation for a given LG mode and saves the plot."""
+  
   # Setup Configuration
   sim_config = pws.SimulationConfig(
     nx=512, ny=512, 
@@ -82,12 +92,10 @@ def main():
   pml_config = pws.PMLConfig(width_x=40, width_y=40, strength=2.0)
   solver_config = pws.SolverConfig(method='spectral', stepper='split_step')
   
-  # Parameters for LG_01 mode (Donut mode)
   w0 = 8.0
-  p_mode = 0
-  l_mode = 1
-  
+
   # Initial Condition (z=0)
+  print(f"\n--- Running Simulation for LG_{p_mode}{l_mode} ---")
   print(f"Initializing Laguerre-Gaussian LG_{p_mode}{l_mode} beam...")
   psi_0 = get_laguerre_gaussian_analytical(sim_config, w0, p_mode, l_mode, z=0.0)
   
@@ -103,17 +111,39 @@ def main():
   
   # Analytical Solution at final z
   z_final = sim_config.lz
-  psi_analytical = get_laguerre_gaussian_analytical(sim_config, w0, p_mode, l_mode, z_final)
+  
+  # Compute Error History and Phase Check
+  print("\n--- Error Analysis over Propagation ---")
+  zs_hist = jnp.arange(sim_config.nz + 1) * sim_config.dz
+  
+  # Check error every 25 steps
+  for i in range(0, sim_config.nz + 1, 25):
+      z_curr = zs_hist[i]
+      psi_num = psi_history[i]
+      
+      # Determine analytical solution (Full Field)
+      psi_ana_full = get_laguerre_gaussian_analytical(sim_config, w0, p_mode, l_mode, z_curr)
+      
+      # Demodulate to compare with Envelope from solver
+      # Solver computes envelope psi, Analytical has psi * exp(i k z)
+      psi_ana_env = psi_ana_full * jnp.exp(-1j * sim_config.k0 * z_curr)
+      
+      err_f = jnp.abs(psi_num - psi_ana_env)
+      norm_ana = jnp.linalg.norm(psi_ana_env)
+      rel_err = jnp.linalg.norm(err_f) / norm_ana
+      print(f"z={z_curr:6.2f}: Rel L2 Error = {rel_err:.2e}")
+
+  # For plotting and final error report, use the final step
+  psi_analytical_full = get_laguerre_gaussian_analytical(sim_config, w0, p_mode, l_mode, z_final)
+  psi_analytical = psi_analytical_full * jnp.exp(-1j * sim_config.k0 * z_final)
   
   # Compute Error
   error_field = jnp.abs(psi_final - psi_analytical)
   l2_norm_ana = jnp.linalg.norm(psi_analytical)
   l2_error = jnp.linalg.norm(error_field) / l2_norm_ana
-  print(f"Relative L2 Error at z={z_final:.2f}: {l2_error:.2e}")
+  print(f"\nFinal Relative L2 Error at z={z_final:.2f}: {l2_error:.2e}")
   
   # Visualize
-  center_y = sim_config.ny // 2
-  
   plt.figure(figsize=(15, 10))
   
   # 1. Intensity at z=0
@@ -154,8 +184,16 @@ def main():
   plt.axis('off')
   
   plt.tight_layout()
-  plt.savefig('laguerre_gaussian_benchmark.png')
-  print("Saved benchmark plot to laguerre_gaussian_benchmark.png")
+  plt.savefig(output_filename)
+  print(f"Saved benchmark plot to {output_filename}")
+
+def main():
+  # Run original requested case: LG_01 (Donut)
+  run_simulation(p_mode=0, l_mode=1, output_filename='laguerre_gaussian_benchmark.png')
+  
+  # Run higher order case: LG_22 (More complex structure)
+  # p=2 gives 2 radial nodes, l=2 gives azimuthal variation
+  run_simulation(p_mode=2, l_mode=2, output_filename='laguerre_gaussian_benchmark_high_order.png')
 
 if __name__ == "__main__":
   main()
