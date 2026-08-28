@@ -25,11 +25,17 @@ class SimulationConfig:
   dz: float
   nz: int
   wavelength: float
+  n0: float
 
   @property
   def k0(self) -> float:
-    """Wavenumber in vacuum (2*pi/wavelength)."""
+    """Wavenumber (2*pi/wavelength)."""
     return 2 * 3.141592653589793 / self.wavelength
+  
+  @property
+  def k(self) -> float:
+    """Wavenumber (2*pi*n0/wavelength)."""
+    return 2 * 3.141592653589793 * self.n0 / self.wavelength
 
   @property
   def lx(self) -> float:
