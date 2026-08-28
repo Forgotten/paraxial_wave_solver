@@ -48,8 +48,9 @@ def main():
     dx=0.25,
     dy=0.25,
     dz=1.0,
-    nz=200,
-    wavelength=1.0
+    nz=1000,
+    wavelength=1.0,
+    n0=1.0
   )
   
   # Vacuum propagation.

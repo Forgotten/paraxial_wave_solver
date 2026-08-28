@@ -84,15 +84,15 @@ def run_simulation(p_mode, l_mode, output_filename, title_suffix=""):
   # Setup Configuration
   sim_config = pws.SimulationConfig(
     nx=512, ny=512, 
-    dx=0.2, dy=0.2, dz=1.0, 
-    nz=200, 
-    wavelength=1.0
+    dx=0.0075, dy=0.0075, dz=1.0, 
+    nz=250, # propagation length (2.5 m)
+    wavelength=632.8e-7 # Wavelength in centimeters (632.8 nm)
   )
   
   pml_config = pws.PMLConfig(width_x=40, width_y=40, strength=2.0)
   solver_config = pws.SolverConfig(method='spectral', stepper='split_step')
   
-  w0 = 8.0
+  w0 = 3.0e-1 # Beam waist in centimeters (3 mm)
 
   # Initial Condition (z=0)
   print(f"\n--- Running Simulation for LG_{p_mode}{l_mode} ---")
@@ -189,11 +189,12 @@ def run_simulation(p_mode, l_mode, output_filename, title_suffix=""):
 
 def main():
   # Run original requested case: LG_01 (Donut)
-  run_simulation(p_mode=0, l_mode=1, output_filename='laguerre_gaussian_benchmark.png')
-  
-  # Run higher order case: LG_22 (More complex structure)
-  # p=2 gives 2 radial nodes, l=2 gives azimuthal variation
-  run_simulation(p_mode=2, l_mode=2, output_filename='laguerre_gaussian_benchmark_high_order.png')
+  run_simulation(p_mode=0, l_mode=1, output_filename='laguerre_gaussian_01.png')
+
+  # Run higher order cases: LG_14, LG_0-6, LG_1-9 (More complex structure)
+  run_simulation(p_mode=1, l_mode=4, output_filename='laguerre_gaussian_benchmark_14.png')
+  run_simulation(p_mode=0, l_mode=-6, output_filename='laguerre_gaussian_benchmark_0-6.png')
+  run_simulation(p_mode=1, l_mode=9, output_filename='laguerre_gaussian_benchmark_19.png')
 
 if __name__ == "__main__":
   main()
