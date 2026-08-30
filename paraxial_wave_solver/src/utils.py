@@ -50,6 +50,54 @@ def random_medium(
   
   Uses Fourier filtering of white noise to generate a Gaussian random field with a
   specified correlation length.
+
+  Args:
+    sim_config: Simulation configuration.
+    correlation_length: Correlation length of the random medium (physical units).
+    strength: Standard deviation of the refractive index fluctuation (delta_n).
+    key: JAX random key for reproducibility.
+
+  Returns:
+    delta_n: 3D array of shape (nx, ny, nz) containing the refractive index 
+             perturbations.
+  """
+  # Generate white noise.
+  noise = jax.random.normal(key, (sim_config.nx, sim_config.ny, sim_config.nz))
+
+  # Filter in Fourier domain to impose correlation length
+  kx = 2 * jnp.pi * jnp.fft.fftfreq(sim_config.nx, d=sim_config.dx)
+  ky = 2 * jnp.pi * jnp.fft.fftfreq(sim_config.ny, d=sim_config.dy)
+  kz = 2 * jnp.pi * jnp.fft.fftfreq(sim_config.nz, d=sim_config.dz)
+
+  KX, KY, KZ = jnp.meshgrid(kx, ky, kz, indexing='ij')
+  K2 = KX**2 + KY**2 + KZ**2
+  
+  # Gaussian correlation function -> Gaussian power spectrum
+  # C(r) ~ exp(-r^2/L^2) <-> P(k) ~ exp(-k^2 L^2 / 4)
+  power_spectrum = jnp.exp(-K2 * correlation_length**2 / 4.0)
+
+  noise_k = jnp.fft.fftn(noise)
+  filtered_noise_k = noise_k * jnp.sqrt(power_spectrum)
+  delta_n = jnp.real(jnp.fft.ifftn(filtered_noise_k))
+
+  # Normalize to desired strength.
+  current_std = jnp.std(delta_n)
+  delta_n = delta_n * (strength / current_std)
+
+  return delta_n
+
+
+def random_medium_spectral(
+  sim_config: SimulationConfig,
+  Cn2: float,
+  L0: float,
+  l0: float,
+  key: jax.Array
+) -> Field:
+  """Generates a random refractive index perturbation.
+  
+  Uses Fourier filtering of white noise to generate a Gaussian random field with a
+  specified correlation length.
   
   Args:
     sim_config: Simulation configuration.
@@ -61,8 +109,6 @@ def random_medium(
     delta_n: 3D array of shape (nx, ny, nz) containing the refractive index 
              perturbations.
   """
-  # Generate white noise.
-  noise = jax.random.normal(key, (sim_config.nx, sim_config.ny, sim_config.nz))
   
   # Filter in Fourier domain to impose correlation length
   kx = 2 * jnp.pi * jnp.fft.fftfreq(sim_config.nx, d=sim_config.dx)
@@ -70,18 +116,36 @@ def random_medium(
   kz = 2 * jnp.pi * jnp.fft.fftfreq(sim_config.nz, d=sim_config.dz)
   
   KX, KY, KZ = jnp.meshgrid(kx, ky, kz, indexing='ij')
-  K2 = KX**2 + KY**2 + KZ**2
+  kappa = jnp.sqrt(KX**2 + KY**2 + KZ**2)
   
-  # Gaussian correlation function -> Gaussian power spectrum
-  # C(r) ~ exp(-r^2/L^2) <-> P(k) ~ exp(-k^2 L^2 / 4)
-  power_spectrum = jnp.exp(-K2 * correlation_length**2 / 4.0)
-  
-  noise_k = jnp.fft.fftn(noise)
-  filtered_noise_k = noise_k * jnp.sqrt(power_spectrum)
-  delta_n = jnp.real(jnp.fft.ifftn(filtered_noise_k))
-  
-  # Normalize to desired strength.
-  current_std = jnp.std(delta_n)
-  delta_n = delta_n * (strength / current_std)
-  
-  return delta_n
+  dkx = kx[1] - kx[0]
+  dky = ky[1] - ky[0]
+  dkz = kz[1] - kz[0]
+
+  dVk = dkx * dky * dkz
+
+  kappa0 = 2*jnp.pi / L0
+  kappam = 5.92 / l0
+
+  # Von Karman Spectrum
+  Phi_n = 0.033 * Cn2 * jnp.exp(-kappa**2 / kappam**2) / (kappa**2 + kappa0**2)**(11/6)
+  #Phi_n = 0.033 * Cn2 * kappa**(-11/3) * jnp.exp(-kappa**2 / kappam**2)
+
+  sigma_k2 = Phi_n * dVk
+  sigma_k2 = jnp.where(kappa == 0, 0.0, sigma_k2)
+
+  # sample V_hat
+  key_r, key_i = jax.random.split(key)
+  xi_r = jax.random.normal(key_r, sigma_k2.shape)
+  xi_i = jax.random.normal(key_i, sigma_k2.shape)
+
+  # Since IFFT divides by N_total, we must scale inputs by N_total.
+  n_total = sim_config.nx * sim_config.ny * sim_config.nz
+
+  V_hat = n_total * jnp.sqrt(sigma_k2 / 2) * (xi_r + 1j * xi_i)
+
+  V = jnp.real(jnp.fft.ifftn(V_hat)) * jnp.sqrt(2)
+
+  return V
+
+

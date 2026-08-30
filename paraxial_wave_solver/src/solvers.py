@@ -52,35 +52,37 @@ def rhs_paraxial(
   z: float,
   laplacian_fn: Callable[[Field], Field],
   k0: float,
+  n0: float,
   n_ref_fn: Callable[[float], Field],
   pml_profile: Field) -> Field:
   """Computes the Right-Hand Side (RHS) of the Paraxial Wave Equation.
   
   The equation is: 
-  2ik0 dpsi/dz = -Laplacian_perp psi - k0^2(n^2 - 1) psi - 2ik0 sigma psi
+  2ik0n0 dψdz = -Laplacian_perp ψ - 2k0^2n0δn(z)ψ - 2ik0 σψ
   
-  Rearranging for dpsi/dz:
-  dpsi/dz = (i/2k0) Laplacian_perp psi + (ik0/2)(n^2 - 1) psi - sigma psi
+  Rearranging for dψdz:
+  dψdz = (i/2k0n0) Laplacian_perp ψ + (ik0δn(z))ψ - σψ
   
   Args:
     psi: Complex field amplitude at the current z-step.
     z: Current propagation distance.
     laplacian_fn: Function to compute the transverse Laplacian.
     k0: Vacuum wavenumber.
-    n_ref_fn: Function n(z) returning the refractive index grid n(x, y) at z.
-    pml_profile: PML absorption profile sigma(x, y).
+    n0: Medium refractive indes (vacuum/athmosphere = 1, water=1.33).
+    n_ref_fn: Function δn(z) returning the refractive index grid δn(x, y) at z.
+    pml_profile: PML absorption profile σ(x, y).
     
   Returns:
-    dpsi_dz: The derivative of the field with respect to z.
+    dψdz: The derivative of the field with respect to z.
   """
   lap = laplacian_fn(psi)
   
   # We assume n_ref_fn returns the refractive index grid at z.
-  n = n_ref_fn(z)
-  chi = n**2 - 1.0
+  #n = n_ref_fn(z)
+  #chi = n**2 - n0**2
   
-  term1 = (1j / (2 * k0)) * lap
-  term2 = (1j * k0 / 2) * chi * psi
+  term1 = (1j / (2 * k0 * n0)) * lap
+  term2 = (1j * k0 ) * n_ref_fn(z) * psi
   term3 = -pml_profile * psi
   
   return term1 + term2 + term3
@@ -116,6 +118,7 @@ def step_split_step(
   kx: Field,
   ky: Field,
   n_ref_fn: Callable[[float], Field],
+  n0: float,
   pml_profile: Field) -> Field:
   """Performs a single z-step using the Split-Step Fourier method.
   
@@ -132,6 +135,7 @@ def step_split_step(
     k0: Vacuum wavenumber.
     kx, ky: Transverse wavenumber grids.
     n_ref_fn: Function n(z) returning refractive index grid.
+    n0: Medium refractive indes (vacuum/athmosphere = 1, water=1.33).
     pml_profile: PML absorption profile.
     
   Returns:
@@ -139,15 +143,16 @@ def step_split_step(
   """
   # 1. Half-step refraction + PML
   n = n_ref_fn(z + 0.5 * dz) # Midpoint evaluation
-  chi = n**2 - 1.0
-  
-  nonlinear_op_half = jnp.exp( (1j * k0 * chi / 2 - pml_profile) * (dz / 2) )
+  #chi = n**2 - n0**2
+  #chi = n
+
+  nonlinear_op_half = jnp.exp( (1j * k0 * n - pml_profile) * (dz / 2) )
   psi = psi * nonlinear_op_half
   
   # 2. Full-step diffraction (Linear)
   psi_k = jnp.fft.fft2(psi)
   k_sq = kx**2 + ky**2
-  linear_op = jnp.exp( -1j * dz * k_sq / (2 * k0) )
+  linear_op = jnp.exp( -1j * dz * k_sq / (2 * k0 * n0) )
   psi = jnp.fft.ifft2(psi_k * linear_op)
   
   # 3. Half-step refraction + PML
@@ -161,18 +166,18 @@ def _solve_scan(
   zs: Field,
   dz: float,
   step_fn: Callable[[Field, float, float], Field]) -> Tuple[Field, Field]:
-  """JIT-compiled scan loop for efficient propagation.
+  """JIT-compiled scan loop for efficient propagation with downsampling.
   
   Args:
     psi_0: Initial field.
-    zs: Array of z positions.
+    zs: Array of z positions for the start of each chunk.
     dz: Step size.
     step_fn: Stepper function.
-    
+
   Returns:
     A tuple containing:
     - psi_final: Field at the end of propagation.
-    - psi_history: History of the field at each step.
+    - psi_history: History of the field at the end of each chunk.
   """
   def scan_body(carrier: Field, z: float) -> Tuple[Field, Field]:
     psi = carrier
@@ -256,6 +261,7 @@ class ParaxialWaveSolver:
         kx=kx,
         ky=ky,
         n_ref_fn=self.n_ref_fn_partial,
+        n0=sim_config.n0,
         pml_profile=absorption
       )
     else:
@@ -264,22 +270,24 @@ class ParaxialWaveSolver:
         rhs_paraxial,
         laplacian_fn=laplacian_fn,
         k0=sim_config.k0,
+        n0=sim_config.n0,
         n_ref_fn=self.n_ref_fn_partial,
         pml_profile=self.pml_profile
       )
       self.step_fn = Partial(step_rk4, rhs_fn=rhs)
 
-  def solve(self, psi_0: Field) -> Tuple[Field, Field]:
+  def solve(self, psi_0: Field, z_0: float) -> Tuple[Field, Field]:
     """Propagates the initial field psi_0 through the medium.
     
     Args:
-      psi_0: Initial complex field amplitude at z=0.
+      psi_0: Initial complex field amplitude at z=z_0.
+      z_0: Initial z position.
       
     Returns:
       psi_final: Field at z=lz.
-      psi_history: Field history at all z steps (including z=0).
+      psi_history: Field history at every save_interval steps (including z=z_0).
     """
-    zs = jnp.linspace(0, self.sim_config.lz, self.sim_config.nz)
+    zs = jnp.linspace(z_0, self.sim_config.lz, self.sim_config.nz)
     dz = self.sim_config.dz
     
     # Call the JIT-compiled scan loop
@@ -292,6 +300,7 @@ class ParaxialWaveSolver:
 
 def propagate(
   psi_0: Field,
+  z_0: float,
   sim_config: SimulationConfig,
   solver_config: SolverConfig,
   pml_config: PMLConfig,
@@ -300,7 +309,8 @@ def propagate(
   """Main propagation loop (Legacy wrapper).
   
   Args:
-    psi_0: Initial field at z=0.
+    psi_0: Initial field at z=z_0.
+    z_0: Initial z position.
     sim_config: Simulation configuration.
     solver_config: Solver configuration.
     pml_config: PML configuration.
@@ -311,4 +321,4 @@ def propagate(
     psi_history: Field history at all z steps.
   """
   solver = ParaxialWaveSolver(sim_config, solver_config, pml_config, n_ref_fn)
-  return solver.solve(psi_0)
+  return solver.solve(psi_0, z_0)

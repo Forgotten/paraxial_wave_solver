@@ -23,3 +23,9 @@ pip-delete-this-directory.txt
 
 # Project specific (outputs)
 *.png
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Python package
+*.egg-info/

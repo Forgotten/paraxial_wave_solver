@@ -63,7 +63,8 @@ def run_pml_test():
     nx=256, ny=256, 
     dx=0.2, dy=0.2, dz=0.1, 
     nz=400, # Propagate further: 400 * 0.1 = 40.0 units.
-    wavelength=1.0
+    wavelength=1.0,
+    n0=1.0
   )
   
   # We use a Gaussian beam moving towards the boundary to test PML.

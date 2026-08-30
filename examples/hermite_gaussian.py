@@ -66,7 +66,8 @@ def main():
     nx=512, ny=512, 
     dx=0.2, dy=0.2, dz=1.0, 
     nz=200, 
-    wavelength=1.0
+    wavelength=1.0,
+    n0=1.0
   )
   
   pml_config = pws.PMLConfig(width_x=40, width_y=40, strength=2.0)
