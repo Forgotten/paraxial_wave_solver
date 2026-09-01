@@ -1,301 +1,444 @@
+"""Propagation kernels and the paraxial wave solver.
 
+The envelope psi obeys
+
+    d(psi)/dz = (1j / (2 * k0 * n0)) * lap_perp(psi)
+                + 1j * k0 * delta_n(x, y, z) * psi
+                - sigma(x, y) * psi
+
+where delta_n = n - n0 is the refractive index *perturbation* and sigma is the
+PML absorption profile. See `config.py` for the full set of conventions.
+
+Everything that does not vary with z - the diffraction operator, the PML
+attenuation, the wavenumber grids - is built once in `ParaxialWaveSolver`
+and handed to the kernels as arrays, so the scan body contains only the work
+that genuinely changes from step to step.
+"""
+
+import functools
+import math
+import warnings
+from collections.abc import Callable
+from typing import Any
+
+import jax
 import jax.numpy as jnp
-from jax import lax, jit
-from jax.tree_util import Partial
-from functools import partial
-from typing import Callable, Tuple, Any
-from .config import SimulationConfig, SolverConfig, PMLConfig, Field
+from jax import lax
+
+from .config import Field, PMLConfig, SimulationConfig, SolverConfig
 from .operators import (
-  laplacian_fd_2nd, laplacian_fd_4th, laplacian_fd_6th,
+  get_spectral_k_grids,
+  laplacian_fd,
   laplacian_fd_9point,
-  laplacian_spectral, get_spectral_k_grids
+  laplacian_spectral,
 )
 from .pml import generate_pml_profile
 
-def get_laplacian_fn(
-  config: SolverConfig,
+# A refractive index perturbation callable: (z, medium) -> delta_n. The return
+# value must broadcast against an (nx, ny) field; a scalar is fine for a
+# homogeneous medium.
+DeltaNFn = Callable[[Any, Any], Any]
+
+# Operator arrays handed to the kernels. A dict, so it is a pytree and its
+# leaves are traced as ordinary arguments rather than baked in as constants.
+Operators = dict[str, Any]
+
+
+# Peak magnitude of the 1D discrete second-derivative symbol, in units of
+# 1/h**2, reached at the grid Nyquist wavenumber.
+_STENCIL_SPECTRAL_RADIUS = {2: 4.0, 4: 16.0 / 3.0, 6: 272.0 / 45.0}
+
+# Extent of the RK4 stability region along the imaginary axis.
+_RK4_IMAGINARY_STABILITY_LIMIT = 2.0 * math.sqrt(2.0)
+
+
+def _laplacian_spectral_radius(
+  solver_config: SolverConfig,
   sim_config: SimulationConfig,
-  pml_params: None | dict[str, Field] = None
-) -> Callable[[Field], Field]:
-  """Returns the appropriate Laplacian based on the solver configuration.
+) -> float:
+  """Returns the largest |eigenvalue| of the discrete transverse Laplacian."""
+  inv_dx2 = 1.0 / sim_config.dx**2
+  inv_dy2 = 1.0 / sim_config.dy**2
+
+  if solver_config.method == 'spectral':
+    return math.pi**2 * (inv_dx2 + inv_dy2)
+  if solver_config.compact:
+    # Dxx + Dyy + (h^2 / 6) Dxx Dyy at the corner of the Brillouin zone.
+    return 8.0 * inv_dx2 - (sim_config.dx**2 / 6.0) * (4.0 * inv_dx2)**2
+  radius = _STENCIL_SPECTRAL_RADIUS[solver_config.fd_order]
+  return radius * (inv_dx2 + inv_dy2)
+
+
+def _warn_if_unstable(
+  solver_config: SolverConfig,
+  sim_config: SimulationConfig,
+) -> None:
+  """Warns when the RK4 step size exceeds the linear stability limit.
+
+  The paraxial diffraction operator is purely imaginary, so RK4 is stable only
+  while |lambda| * dz stays inside the imaginary-axis stability interval.
+  Exceeding it makes the solution grow without bound, which otherwise shows up
+  only as inf or nan in the returned field.
+  """
+  if solver_config.stepper != 'rk4':
+    return
+  radius = _laplacian_spectral_radius(solver_config, sim_config)
+  growth = radius * sim_config.dz / (2 * sim_config.k0 * sim_config.n0)
+  if growth > _RK4_IMAGINARY_STABILITY_LIMIT:
+    dz_max = (
+      _RK4_IMAGINARY_STABILITY_LIMIT * 2 * sim_config.k0 * sim_config.n0
+      / radius
+    )
+    warnings.warn(
+      f"RK4 step size is above the stability limit: |lambda| * dz = "
+      f"{growth:.3g} exceeds {_RK4_IMAGINARY_STABILITY_LIMIT:.3g}. The "
+      f"propagation will diverge. Reduce dz below {dz_max:.3g}, coarsen the "
+      "transverse grid, or use method='spectral' with stepper='split_step', "
+      "which has no step size restriction.",
+      RuntimeWarning,
+      stacklevel=3,
+    )
+
+
+def _make_laplacian_fn(
+  solver_config: SolverConfig,
+  sim_config: SimulationConfig,
+  use_stretch: bool,
+) -> Callable[[Field, Operators], Field]:
+  """Builds the transverse Laplacian for the configured method.
+
+  Grid spacings are captured as Python floats rather than passed as traced
+  arguments, so stencils may branch on them at build time and so the constants
+  they form are folded at trace time.
 
   Args:
-    config: Solver configuration specifying the method and order.
-    sim_config: Simulation configuration specifying grid parameters.
+    solver_config: Solver configuration.
+    sim_config: Simulation configuration.
+    use_stretch: Whether complex coordinate stretching is active.
 
   Returns:
-    A callable that takes a Field and returns its Laplacian as a Field.
+    A callable (field, operators) -> Laplacian.
+
+  Raises:
+    ValueError: If the compact stencil is requested with dx != dy.
+    NotImplementedError: If stretching is requested for the compact stencil.
   """
-  if config.method == 'finite_difference':
-    if config.compact:
-      # Use the 9-point isotropic stencil
-      return Partial(laplacian_fd_9point, dx=sim_config.dx, dy=sim_config.dy)
+  dx, dy = sim_config.dx, sim_config.dy
 
-    if config.fd_order == 2:
-      return Partial(laplacian_fd_2nd, dx=sim_config.dx, dy=sim_config.dy, pml_params=pml_params)
-    elif config.fd_order == 4:
-      return Partial(laplacian_fd_4th, dx=sim_config.dx, dy=sim_config.dy, pml_params=pml_params)
-    elif config.fd_order == 6:
-      return Partial(laplacian_fd_6th, dx=sim_config.dx, dy=sim_config.dy, pml_params=pml_params)
-    else:
-      raise ValueError(f"Unsupported FD order: {config.fd_order}")
-  elif config.method == 'spectral':
-    kx, ky = get_spectral_k_grids(sim_config.nx, sim_config.ny, 
-                                  sim_config.dx, sim_config.dy)
-    return Partial(laplacian_spectral, kx_grid=kx, ky_grid=ky)
-  else:
-    raise ValueError(f"Unsupported method: {config.method}")
+  if solver_config.method == 'spectral':
+    def laplacian(field: Field, operators: Operators) -> Field:
+      return laplacian_spectral(field, operators['kx'], operators['ky'])
+    return laplacian
 
-def rhs_paraxial(
-  psi: Field,
-  z: float,
-  laplacian_fn: Callable[[Field], Field],
-  k0: float,
-  n0: float,
-  n_ref_fn: Callable[[float], Field],
-  pml_profile: Field) -> Field:
-  """Computes the Right-Hand Side (RHS) of the Paraxial Wave Equation.
-  
-  The equation is: 
-  2ik0n0 dψdz = -Laplacian_perp ψ - 2k0^2n0δn(z)ψ - 2ik0 σψ
-  
-  Rearranging for dψdz:
-  dψdz = (i/2k0n0) Laplacian_perp ψ + (ik0δn(z))ψ - σψ
-  
+  if solver_config.compact:
+    if use_stretch:
+      raise NotImplementedError(
+        "Complex coordinate stretching is not implemented for the compact "
+        "9-point stencil. Set use_complex_stretching=False, or compact=False."
+      )
+    if dx != dy:
+      raise ValueError(
+        f"compact=True requires dx == dy, got dx={dx!r}, dy={dy!r}."
+      )
+
+    def laplacian(field: Field, operators: Operators) -> Field:
+      return laplacian_fd_9point(field, dx, dy)
+    return laplacian
+
+  order = solver_config.fd_order
+
+  if use_stretch:
+    def laplacian(field: Field, operators: Operators) -> Field:
+      return laplacian_fd(field, dx, dy, order, operators['stretch'])
+    return laplacian
+
+  def laplacian(field: Field, operators: Operators) -> Field:
+    return laplacian_fd(field, dx, dy, order)
+  return laplacian
+
+
+def _make_split_step_kernel(
+  sim_config: SimulationConfig,
+  delta_n_fn: DeltaNFn | None,
+  has_pml: bool,
+) -> Callable[[Field, Any, Operators, Any], Field]:
+  """Builds a symmetric (Strang) split-step Fourier kernel.
+
+  Each step is a half-step of the refraction/absorption operator, a full step
+  of diffraction in Fourier space, and a second half-step. The diffraction
+  operator and the PML attenuation are z-independent and arrive precomputed in
+  `operators`; in vacuum without a PML the potential half-steps vanish
+  entirely and are omitted at build time.
+
   Args:
-    psi: Complex field amplitude at the current z-step.
-    z: Current propagation distance.
-    laplacian_fn: Function to compute the transverse Laplacian.
-    k0: Vacuum wavenumber.
-    n0: Medium refractive indes (vacuum/athmosphere = 1, water=1.33).
-    n_ref_fn: Function δn(z) returning the refractive index grid δn(x, y) at z.
-    pml_profile: PML absorption profile σ(x, y).
-    
-  Returns:
-    dψdz: The derivative of the field with respect to z.
-  """
-  lap = laplacian_fn(psi)
-  
-  # We assume n_ref_fn returns the refractive index grid at z.
-  #n = n_ref_fn(z)
-  #chi = n**2 - n0**2
-  
-  term1 = (1j / (2 * k0 * n0)) * lap
-  term2 = (1j * k0 ) * n_ref_fn(z) * psi
-  term3 = -pml_profile * psi
-  
-  return term1 + term2 + term3
+    sim_config: Simulation configuration.
+    delta_n_fn: Refractive index perturbation, or None for vacuum.
+    has_pml: Whether the PML profile is non-trivial.
 
-def step_rk4(
-  psi: Field,
-  z: float,
-  dz: float,
-  rhs_fn: Callable[[Field, float], Field]) -> Field:
-  """Performs a single z-step using the 4th-order Runge-Kutta method.
-  
+  Returns:
+    A callable (psi, z, operators, medium) -> psi at z + dz.
+  """
+  k0 = sim_config.k0
+  half_dz = 0.5 * sim_config.dz
+  phase_scale = 1j * k0 * half_dz
+  needs_half = has_pml or delta_n_fn is not None
+
+  def half_operator(z: Any, operators: Operators, medium: Any) -> Any:
+    if delta_n_fn is None:
+      return operators['pml_half']
+    phase = jnp.exp(phase_scale * delta_n_fn(z + half_dz, medium))
+    if has_pml:
+      return operators['pml_half'] * phase
+    return phase
+
+  def step(psi: Field, z: Any, operators: Operators, medium: Any) -> Field:
+    if needs_half:
+      half = half_operator(z, operators, medium)
+      psi = psi * half
+    psi = jnp.fft.ifft2(jnp.fft.fft2(psi) * operators['linear'])
+    if needs_half:
+      psi = psi * half
+    return psi
+
+  return step
+
+
+def _make_rk4_kernel(
+  sim_config: SimulationConfig,
+  laplacian_fn: Callable[[Field, Operators], Field],
+  delta_n_fn: DeltaNFn | None,
+  apply_sigma: bool,
+) -> Callable[[Field, Any, Operators, Any], Field]:
+  """Builds a 4th-order Runge-Kutta kernel for the paraxial RHS.
+
   Args:
-    psi: Field at current z.
-    z: Current z position.
-    dz: Step size.
-    rhs_fn: Function computing the RHS dpsi/dz = f(psi, z).
-    
+    sim_config: Simulation configuration.
+    laplacian_fn: Transverse Laplacian, as built by `_make_laplacian_fn`.
+    delta_n_fn: Refractive index perturbation, or None for vacuum.
+    apply_sigma: Whether to apply the absorbing potential term. False when
+                 absorption is carried by complex coordinate stretching.
+
   Returns:
-    psi_next: Field at z + dz.
+    A callable (psi, z, operators, medium) -> psi at z + dz.
   """
-  k1 = rhs_fn(psi, z)
-  k2 = rhs_fn(psi + 0.5 * dz * k1, z + 0.5 * dz)
-  k3 = rhs_fn(psi + 0.5 * dz * k2, z + 0.5 * dz)
-  k4 = rhs_fn(psi + dz * k3, z + dz)
-  
-  return psi + (dz / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+  k0 = sim_config.k0
+  dz = sim_config.dz
+  diffraction_coeff = 1j / (2 * k0 * sim_config.n0)
 
-def step_split_step(
-  psi: Field,
-  z: float,
-  dz: float,
-  k0: float,
-  kx: Field,
-  ky: Field,
-  n_ref_fn: Callable[[float], Field],
-  n0: float,
-  pml_profile: Field) -> Field:
-  """Performs a single z-step using the Split-Step Fourier method.
-  
-  Uses a symmetric Strang splitting (2nd order accuracy in z). Where
-  it follows the following steps:
-  1. Half-step of nonlinear/potential operator (refraction + PML).
-  2. Full-step of linear diffraction operator (in Fourier space).
-  3. Half-step of nonlinear/potential operator.
-  
-  Args:
-    psi: Field at current z.
-    z: Current z position.
-    dz: Step size.
-    k0: Vacuum wavenumber.
-    kx, ky: Transverse wavenumber grids.
-    n_ref_fn: Function n(z) returning refractive index grid.
-    n0: Medium refractive indes (vacuum/athmosphere = 1, water=1.33).
-    pml_profile: PML absorption profile.
-    
-  Returns:
-    psi_next: Field at z + dz.
-  """
-  # 1. Half-step refraction + PML
-  n = n_ref_fn(z + 0.5 * dz) # Midpoint evaluation
-  #chi = n**2 - n0**2
-  #chi = n
+  def rhs(psi: Field, z: Any, operators: Operators, medium: Any) -> Field:
+    out = diffraction_coeff * laplacian_fn(psi, operators)
+    if delta_n_fn is not None:
+      out = out + (1j * k0) * delta_n_fn(z, medium) * psi
+    if apply_sigma:
+      out = out - operators['sigma'] * psi
+    return out
 
-  nonlinear_op_half = jnp.exp( (1j * k0 * n - pml_profile) * (dz / 2) )
-  psi = psi * nonlinear_op_half
-  
-  # 2. Full-step diffraction (Linear)
-  psi_k = jnp.fft.fft2(psi)
-  k_sq = kx**2 + ky**2
-  linear_op = jnp.exp( -1j * dz * k_sq / (2 * k0 * n0) )
-  psi = jnp.fft.ifft2(psi_k * linear_op)
-  
-  # 3. Half-step refraction + PML
-  psi = psi * nonlinear_op_half
-  
-  return psi
+  def step(psi: Field, z: Any, operators: Operators, medium: Any) -> Field:
+    k1 = rhs(psi, z, operators, medium)
+    k2 = rhs(psi + 0.5 * dz * k1, z + 0.5 * dz, operators, medium)
+    k3 = rhs(psi + 0.5 * dz * k2, z + 0.5 * dz, operators, medium)
+    k4 = rhs(psi + dz * k3, z + dz, operators, medium)
+    return psi + (dz / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
 
-@jit
-def _solve_scan(
+  return step
+
+
+@functools.partial(
+  jax.jit, static_argnames=('step_fn', 'return_history')
+)
+def _propagate(
   psi_0: Field,
-  zs: Field,
-  dz: float,
-  step_fn: Callable[[Field, float, float], Field]) -> Tuple[Field, Field]:
-  """JIT-compiled scan loop for efficient propagation with downsampling.
-  
+  z_blocks: Field,
+  operators: Operators,
+  medium: Any,
+  step_fn: Callable[[Field, Any, Operators, Any], Field],
+  return_history: bool,
+) -> tuple[Field, Field | None]:
+  """Runs the propagation as a nested scan over blocks of steps.
+
+  The outer scan emits one field per block and the inner scan advances through
+  the block without emitting, so the history array holds one entry per saved
+  plane rather than one per step.
+
   Args:
     psi_0: Initial field.
-    zs: Array of z positions for the start of each chunk.
-    dz: Step size.
-    step_fn: Stepper function.
+    z_blocks: Propagation coordinates, shaped (n_blocks, save_every).
+    operators: Precomputed z-independent operator arrays.
+    medium: Auxiliary data forwarded to the refractive index callable.
+    step_fn: Single-step kernel (static).
+    return_history: Whether to accumulate the field history (static).
 
   Returns:
-    A tuple containing:
-    - psi_final: Field at the end of propagation.
-    - psi_history: History of the field at the end of each chunk.
+    A tuple (psi_final, psi_history); psi_history is None when
+    return_history is False.
   """
-  def scan_body(carrier: Field, z: float) -> Tuple[Field, Field]:
-    psi = carrier
-    psi_next = step_fn(psi, z, dz)
-    return psi_next, psi_next
+  def advance(psi: Field, z: Any) -> tuple[Field, None]:
+    return step_fn(psi, z, operators, medium), None
 
-  psi_final, psi_history = lax.scan(scan_body, psi_0, zs)
-  return psi_final, psi_history
+  def block(psi: Field, z_block: Field) -> tuple[Field, Field | None]:
+    emitted = psi if return_history else None
+    psi, _ = lax.scan(advance, psi, z_block)
+    return psi, emitted
+
+  return lax.scan(block, psi_0, z_blocks)
+
 
 class ParaxialWaveSolver:
+  """Solver for the paraxial wave equation.
+
+  Encapsulates the simulation configuration, solver method, PML settings and
+  refractive index perturbation, and propagates an initial envelope through
+  the medium.
+
+  The refractive index is supplied as a perturbation delta_n = n - n0 and is
+  called as `delta_n_fn(z, medium)`. Passing the medium through `solve` rather
+  than closing over it keeps it a traced argument, so swapping media - across
+  chunks, or across realizations of a turbulent ensemble - reuses the compiled
+  computation instead of triggering a fresh trace.
   """
-  Solver for the Paraxial Wave Equation.
-  
-  Encapsulates the simulation configuration, solver method, PML settings, and 
-  refractive index profile. Provides a method to propagate an initial field 
-  through the medium.
-  """
-  
+
   def __init__(
     self,
     sim_config: SimulationConfig,
     solver_config: SolverConfig,
     pml_config: PMLConfig,
-    n_ref_fn: Callable[[float], Field]
+    delta_n_fn: DeltaNFn | None = None,
   ):
-    """Initialize the solver.
-    
+    """Initializes the solver and precomputes every z-independent operator.
+
     Args:
       sim_config: Simulation configuration.
       solver_config: Solver configuration.
       pml_config: PML configuration.
-      n_ref_fn: Function taking z and returning refractive index grid n(x, y).
+      delta_n_fn: Callable (z, medium) -> delta_n, where delta_n broadcasts
+                  against an (nx, ny) field. None means vacuum, and lets the
+                  solver drop the refraction term entirely.
+
+    Raises:
+      ValueError: If the PML is wider than half the grid, or if the solver
+                  configuration is incompatible with the grid.
     """
+    if 2 * pml_config.width_x >= sim_config.nx:
+      raise ValueError(
+        f"PML width_x={pml_config.width_x} leaves no interior domain for "
+        f"nx={sim_config.nx}; it must be smaller than nx / 2."
+      )
+    if 2 * pml_config.width_y >= sim_config.ny:
+      raise ValueError(
+        f"PML width_y={pml_config.width_y} leaves no interior domain for "
+        f"ny={sim_config.ny}; it must be smaller than ny / 2."
+      )
+
+    _warn_if_unstable(solver_config, sim_config)
+
     self.sim_config = sim_config
     self.solver_config = solver_config
     self.pml_config = pml_config
-    self.n_ref_fn = n_ref_fn
-    
-    # Pre-compute PML data
+    self.delta_n_fn = delta_n_fn
+
     pml_data = generate_pml_profile(sim_config, pml_config)
-    
-    pml_params = None
-    absorbing_profile = None
 
-    if isinstance(pml_data, dict):
-        # Using Complex Coordinate Stretching
-        pml_params = pml_data
-        # Set absorbing potential to zero since absorption is in the operator
-        absorbing_profile = jnp.zeros((sim_config.nx, sim_config.ny))
-    else:
-        # Standard absorbing potential (or spectral)
-        absorbing_profile = pml_data
-    
-    self.pml_profile = absorbing_profile
+    # Coordinate stretching only makes sense for the finite difference
+    # operators; the spectral method falls back to the absorbing potential.
+    use_stretch = (
+      pml_data.stretch is not None
+      and solver_config.method == 'finite_difference'
+    )
+    has_pml = bool(pml_config.width_x or pml_config.width_y) and (
+      pml_config.strength > 0.0
+    )
 
-    # Wrap n_ref_fn in Partial if it's a plain function to ensure it's a valid 
-    # PyTree node (though Partial treats the func as static, which is what we 
-    # want for a pure function).
-    # Note: If n_ref_fn is already a Partial or JAX-compatible callable, 
-    # wrapping it again is harmless. For safety with JIT, we wrap it.
-    self.n_ref_fn_partial = Partial(n_ref_fn)
-    
-    # Setup step function using Partial to be JIT-friendly.
-    if (solver_config.method == 'spectral' and 
-        solver_config.stepper == 'split_step'):
-      kx, ky = get_spectral_k_grids(sim_config.nx, sim_config.ny, 
-                                    sim_config.dx, sim_config.dy)
-      
-      # For spectral, we currently fallback to absorbing layer even if stretching was requested.
-      # Spectral method with coordinate stretching is different (requires deformed Fourier transform).
-      # We'll use the 'sigma_sum' from the dict if available for the absorbing layer.
-      
-      absorption = self.pml_profile
-      if isinstance(pml_data, dict):
-        # Fallback for spectral: use the scalar profile.
-        absorption = pml_data['sigma_sum']
+    self.pml_profile = pml_data.sigma
+    operators: Operators = {}
 
-      self.step_fn = Partial(
-        step_split_step,
-        k0=sim_config.k0,
-        kx=kx,
-        ky=ky,
-        n_ref_fn=self.n_ref_fn_partial,
-        n0=sim_config.n0,
-        pml_profile=absorption
+    if solver_config.stepper == 'split_step':
+      kx, ky = get_spectral_k_grids(
+        sim_config.nx, sim_config.ny, sim_config.dx, sim_config.dy
+      )
+      # Precomputed once: the diffraction operator does not depend on z.
+      operators['linear'] = jnp.exp(
+        -1j * sim_config.dz * (kx**2 + ky**2)
+        / (2 * sim_config.k0 * sim_config.n0)
+      )
+      if has_pml:
+        operators['pml_half'] = jnp.exp(-pml_data.sigma * (sim_config.dz / 2))
+      self._step_fn = _make_split_step_kernel(
+        sim_config, delta_n_fn, has_pml
       )
     else:
-      laplacian_fn = get_laplacian_fn(solver_config, sim_config, pml_params=pml_params)
-      rhs = Partial(
-        rhs_paraxial,
-        laplacian_fn=laplacian_fn,
-        k0=sim_config.k0,
-        n0=sim_config.n0,
-        n_ref_fn=self.n_ref_fn_partial,
-        pml_profile=self.pml_profile
+      if solver_config.method == 'spectral':
+        kx, ky = get_spectral_k_grids(
+          sim_config.nx, sim_config.ny, sim_config.dx, sim_config.dy
+        )
+        operators['kx'], operators['ky'] = kx, ky
+      if use_stretch:
+        operators['stretch'] = pml_data.stretch.as_dict()
+      apply_sigma = has_pml and not use_stretch
+      if apply_sigma:
+        operators['sigma'] = pml_data.sigma
+      laplacian_fn = _make_laplacian_fn(
+        solver_config, sim_config, use_stretch
       )
-      self.step_fn = Partial(step_rk4, rhs_fn=rhs)
+      self._step_fn = _make_rk4_kernel(
+        sim_config, laplacian_fn, delta_n_fn, apply_sigma
+      )
 
-  def solve(self, psi_0: Field, z_0: float = 0.0) -> Tuple[Field, Field]:
-    """Propagates the initial field psi_0 through the medium.
-    
+    self._operators = operators
+
+  def solve(
+    self,
+    psi_0: Field,
+    z_0: float = 0.0,
+    medium: Any = None,
+    save_every: int = 1,
+    return_history: bool = True,
+  ) -> tuple[Field, Field | None]:
+    """Propagates the initial envelope psi_0 through the medium.
+
     Args:
-      psi_0: Initial complex field amplitude at z=z_0.
-      z_0: Initial z position (default: 0.0).
-      
+      psi_0: Initial complex field amplitude at z = z_0.
+      z_0: Initial z position. The solver takes nz steps of size dz from here,
+           so it finishes at z_0 + nz * dz.
+      medium: Auxiliary data forwarded as the second argument of delta_n_fn.
+              Passing it here rather than closing over it keeps the compiled
+              computation reusable across media.
+      save_every: Store the field every `save_every` steps. Must divide nz.
+      return_history: If False, no history is accumulated and only the final
+                      field is returned. For long runs this is the difference
+                      between allocating an (nz, nx, ny) complex array and
+                      allocating nothing.
+
     Returns:
-      psi_final: Field at z=lz.
-      psi_history: Field history at every save_interval steps (including z=z_0).
+      A tuple (psi_final, psi_history) where psi_final is the field at
+      z_0 + nz * dz, and psi_history has shape (nz // save_every, nx, ny) with
+      psi_history[j] the field at z_0 + j * save_every * dz - so index 0 is
+      psi_0 itself. psi_history is None when return_history is False.
+
+    Raises:
+      ValueError: If save_every is not a positive divisor of nz.
     """
-    zs = jnp.linspace(z_0, self.sim_config.lz, self.sim_config.nz)
-    dz = self.sim_config.dz
-    
-    # Call the JIT-compiled scan loop.
-    psi_final, psi_history = _solve_scan(psi_0, zs, dz, self.step_fn)
-    
-    # Prepend initial condition to history.
-    psi_history = jnp.concatenate([psi_0[None, ...], psi_history], axis=0)
-    
-    return psi_final, psi_history
+    nz = self.sim_config.nz
+    if save_every < 1:
+      raise ValueError(f"save_every must be positive, got {save_every}.")
+    if nz % save_every:
+      raise ValueError(
+        f"save_every={save_every} must divide nz={nz}."
+      )
+
+    # Exact dz spacing: linspace(z_0, lz, nz) would step by (lz - z_0)/(nz - 1)
+    # and would ignore z_0 in the span entirely.
+    zs = z_0 + self.sim_config.dz * jnp.arange(nz)
+    z_blocks = zs.reshape(nz // save_every, save_every)
+
+    return _propagate(
+      psi_0,
+      z_blocks,
+      self._operators,
+      medium,
+      step_fn=self._step_fn,
+      return_history=return_history,
+    )
+
 
 def propagate(
   psi_0: Field,
@@ -303,21 +446,34 @@ def propagate(
   sim_config: SimulationConfig,
   solver_config: SolverConfig,
   pml_config: PMLConfig,
-  n_ref_fn: Callable[[float], Field]
-) -> Tuple[Field, Field]:
-  """Main propagation loop (Legacy wrapper).
-  
+  delta_n_fn: DeltaNFn | None = None,
+  medium: Any = None,
+  save_every: int = 1,
+  return_history: bool = True,
+) -> tuple[Field, Field | None]:
+  """Builds a solver and propagates psi_0 in one call.
+
+  Convenient for one-off runs. Prefer constructing a `ParaxialWaveSolver` when
+  propagating repeatedly, so the compiled computation is reused.
+
   Args:
-    psi_0: Initial field at z=z_0.
+    psi_0: Initial field at z = z_0.
     z_0: Initial z position.
     sim_config: Simulation configuration.
     solver_config: Solver configuration.
     pml_config: PML configuration.
-    n_ref_fn: Function taking z and returning refractive index grid n(x, y).
-  
+    delta_n_fn: Callable (z, medium) -> delta_n, or None for vacuum.
+    medium: Auxiliary data forwarded to delta_n_fn.
+    save_every: Store the field every `save_every` steps.
+    return_history: Whether to accumulate the field history.
+
   Returns:
-    psi_final: Field at z=lz.
-    psi_history: Field history at all z steps.
+    A tuple (psi_final, psi_history); see `ParaxialWaveSolver.solve`.
   """
-  solver = ParaxialWaveSolver(sim_config, solver_config, pml_config, n_ref_fn)
-  return solver.solve(psi_0, z_0)
+  solver = ParaxialWaveSolver(
+    sim_config, solver_config, pml_config, delta_n_fn
+  )
+  return solver.solve(
+    psi_0, z_0, medium=medium, save_every=save_every,
+    return_history=return_history,
+  )

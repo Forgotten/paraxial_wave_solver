@@ -1,8 +1,8 @@
 import os
 import sys
+
 import jax
 import jax.numpy as jnp
-import jax.random as jr
 import matplotlib.pyplot as plt
 
 # Add project root to path.
@@ -39,13 +39,14 @@ def initialize_laguerre(
     )
 
   def lg_beam(z):
-    psi = jnp.zeros((sim_config.nx, sim_config.ny), dtype=jnp.complex64)
-    for c, (p, l) in zip(coeffs, modes):
-      if c != 0.0:
-        psi = psi + c * pws.laguerre_gaussian_beam(
-          sim_config, w0=w0, p=p, l=l, z=z, power=power
-        )
-    return psi
+    """Returns the composite envelope at distance z."""
+    terms = [
+      c * pws.laguerre_gaussian_beam(
+        sim_config, w0=w0, p=p, l=l, z=z, power=power, envelope_only=True
+      )
+      for c, (p, l) in zip(coeffs, modes) if c != 0.0
+    ]
+    return sum(terms)
 
   return lg_beam
 
@@ -63,8 +64,8 @@ def run_simulation_total(coeffs, Cn2, N_simulations=3):
   """
   # Setup Configuration.
   sim_config = pws.SimulationConfig(
-    nx=500, ny=500, 
-    dx=1e-4, dy=1e-4, dz=2.5e-2, 
+    nx=500, ny=500,
+    dx=1e-4, dy=1e-4, dz=2.5e-2,
     nz=100, # propagation length (2.5 m).
     wavelength=632.8e-9, # Wavelength in meters (632.8 nm).
     n0=1.33 # refractive index (underwater=1.33, vacuum=1.0).
@@ -79,61 +80,55 @@ def run_simulation_total(coeffs, Cn2, N_simulations=3):
   solver_config = pws.SolverConfig(method='spectral', stepper='split_step')
   w0 = 3.0e-3 # Beam waist in meters (3 mm).
   lg_beam = initialize_laguerre(coeffs, sim_config, w0, power)
-  
+
   # Initialize field.
   psi_0 = lg_beam(0.0)
-  
+
   # Use N_simulations argument as number of chunks to extend.
   num_chunks = max(1, N_simulations)
-  
+
+  # The turbulent volume is passed as an argument, together with the absolute
+  # z at which it starts, so that one compiled solver serves every chunk.
+  def delta_n_fn(z, medium):
+    volume, z_start = medium
+    idx = jnp.clip(jnp.round((z - z_start) / sim_config.dz).astype(int), 0,
+                   sim_config.nz - 1)
+    return volume[:, :, idx]
+
+  solver = pws.ParaxialWaveSolver(
+    sim_config, solver_config, pml_config, delta_n_fn
+  )
+
   psi_current = psi_0
-  psi_history_total = None # Will initialize after first chunk.
-  
+  histories = []
   current_z = 0.0
   print(f"Starting simulation: {num_chunks} chunks of {sim_config.nz} steps each.")
 
   for i in range(num_chunks):
     print(f"Simulating chunk {i+1}/{num_chunks} (z={current_z:.2f}m)...")
-    
-    # IMPORTANT: Use a different seed for each chunk to get fresh random medium.
-    # Note: This breaks longitudinal correlation at the boundary, but L0 ~ 0.5m.
-    seed = i 
-    
-    # We must wrap delta_n to handle the absolute z passed by the solver.
-    # The generated volume is always for indices 0..nz-1.
-    key = jax.random.PRNGKey(seed)
-    delta_n = pws.random_medium_spectral(sim_config, Cn2, L0, l0, key)
-    chunk_start_z = current_z
 
-    def n_ref_wrapper(z):
-      # Shift z to be relative to the start of this chunk.
-      z_rel = z - chunk_start_z 
-      idx = jnp.clip(jnp.round(z_rel / sim_config.dz).astype(int), 0, 
-                     sim_config.nz - 1)
-      return delta_n[:, :, idx]
-    
-    solver = pws.ParaxialWaveSolver(sim_config, solver_config, pml_config, n_ref_wrapper)
-    
-    # Solve for this chunk.
-    psi_final_chunk, psi_history_chunk = solver.solve(psi_current, current_z)
-    
-    # Concatenate history.
-    if psi_history_total is None:
-      psi_history_total = psi_history_chunk[:-1]
-    else:
-      psi_history_total = jnp.concatenate([psi_history_total, psi_history_chunk[:-1]], axis=0)
-        
-    # Update state for next chunk.
-    psi_current = psi_final_chunk
-    current_z += sim_config.nz * sim_config.dz
-      
-  # Append final field.
-  psi_history_total = jnp.concatenate([psi_history_total, psi_current[None, ...]], axis=0)
-  
+    # A different seed per chunk gives a fresh medium. This breaks the
+    # longitudinal correlation at the chunk boundary, acceptable while the
+    # chunk length stays well above the outer scale L0.
+    key = jax.random.PRNGKey(i)
+    delta_n = pws.random_medium_spectral(sim_config, Cn2, L0, l0, key)
+
+    psi_current, history = solver.solve(
+      psi_current, current_z, medium=(delta_n, current_z)
+    )
+    # history[j] is the field at current_z + j * dz, so chunks concatenate
+    # without any overlap to trim.
+    histories.append(history)
+    current_z += sim_config.lz
+
+  psi_history_total = jnp.concatenate(
+    histories + [psi_current[None, ...]], axis=0
+  )
+
   z_final = current_z
   print(f"Calculating analytical solution at z={z_final:.2f}m...")
-  psi_analytical = lg_beam(z_final) * jnp.exp(-1j * sim_config.k0 * sim_config.n0 * z_final)
-  
+  psi_analytical = lg_beam(z_final)
+
   return psi_history_total, psi_0, psi_analytical, z_final, sim_config
 
 
@@ -163,19 +158,19 @@ def main(N_simulations, Cn2, output_filename, coeffs=None):
 
   # Visualize.
   plt.figure(figsize=(15, 10))
-  
+
   # 1. Intensity at z=0.
   plt.subplot(2, 2, 1)
   plt.imshow(jnp.abs(psi_0).T, origin='lower', cmap='inferno')
-  plt.title(f'Initial Intensity (z=0)')
+  plt.title('Initial Intensity (z=0)')
   plt.axis('off')
-  
+
   # 2. Numerical Intensity at z=final.
   plt.subplot(2, 2, 2)
   plt.imshow(jnp.abs(psi_final).T, origin='lower', cmap='inferno')
   plt.title(f'Turbulent Intensity (z={z_final:.2e})')
   plt.axis('off')
-  
+
   # 3. XZ Slice of Intensity History.
   x_center = sim_config.nx // 2
   xz_slice = psi_history_total[:, x_center, :].T  # Shape (nz+1, ny).
@@ -197,7 +192,7 @@ def main(N_simulations, Cn2, output_filename, coeffs=None):
   plt.axis('off')
   plt.xlabel('Propagation Distance (z)')
   plt.ylabel('y')
-  
+
   plt.tight_layout()
   plt.savefig(output_filename)
   print(f"Saved benchmark plot to {output_filename}")

@@ -1,6 +1,12 @@
+"""Transverse Laplacian operators: finite difference stencils and spectral."""
+
+from collections.abc import Callable
+
 import jax.numpy as jnp
-from jax import lax
-from .config import Field
+
+from .config import FD_ORDERS, Field
+
+StencilFn = Callable[[Field, float, int], Field]
 
 
 def d1_2nd(u: Field, h: float, axis: int) -> Field:
@@ -57,185 +63,132 @@ def d2_6th(u: Field, h: float, axis: int) -> Field:
   ) / (h**2)
 
 
+# Second- and first-derivative stencil pairs, keyed by order of accuracy. The
+# first derivative is only needed when complex coordinate stretching is active.
+STENCILS: dict[int, tuple[StencilFn, StencilFn]] = {
+  2: (d2_2nd, d1_2nd),
+  4: (d2_4th, d1_4th),
+  6: (d2_6th, d1_6th),
+}
+
+
 def apply_stretched_op(
-  u: Field, 
-  d2_fn, 
-  d1_fn, 
-  h: float, 
+  u: Field,
+  d2_fn: StencilFn,
+  d1_fn: StencilFn,
+  h: float,
   axis: int,
-  s: None | Field = None, 
-  s_prime: None | Field = None
+  s: Field,
+  s_prime: Field,
 ) -> Field:
   """Applies the stretched derivative operator: (1/s) d/dx ((1/s) d/dx u).
-  
+
   Expands to: (1/s^2) d^2u/dx^2 - (s'/s^3) du/dx.
+
+  Args:
+    u: Input field.
+    d2_fn: Second-derivative stencil.
+    d1_fn: First-derivative stencil.
+    h: Grid spacing along the axis.
+    axis: Axis to differentiate along.
+    s: Complex stretch factor, broadcastable to u's shape.
+    s_prime: Derivative of the stretch factor, broadcastable to u's shape.
+
+  Returns:
+    The stretched second derivative of u along the given axis.
   """
   d2_u = d2_fn(u, h, axis)
-  if s is None:
-    return d2_u
-    
   d1_u = d1_fn(u, h, axis)
-  
-  # s and s_prime are assumed to be 2D fields matching u's shape.
-  term1 = (1.0 / (s**2)) * d2_u
-  term2 = (s_prime / (s**3)) * d1_u
-  
-  return term1 - term2
+  return (1.0 / s**2) * d2_u - (s_prime / s**3) * d1_u
 
 
-def laplacian_fd_2nd(
-  field: Field, 
-  dx: float, 
-  dy: float, 
-  pml_params: None | dict[str, Field] = None
-) -> Field:
-  """Computes the 2D Laplacian using a 2nd-order finite difference scheme.
-  
-  Args:
-    field: Input 2D field array of shape (nx, ny).
-    dx: Grid spacing in the x-direction.
-    dy: Grid spacing in the y-direction.
-    pml_params: Optional dict containing stretched PML coordinate fields.
-    
-  Returns:
-    The Laplacian of the input field, same shape as input.
-  """
-  def d2_2nd_local(u: Field, h: float, axis: int) -> Field:
-    return (
-      jnp.roll(u, -1, axis=axis)
-      - 2 * u
-      + jnp.roll(u, 1, axis=axis)
-    ) / (h**2)
-  
-  if pml_params:
-    Lx = apply_stretched_op(
-      field, d2_2nd_local, d1_2nd, dx, 0, pml_params['sx'], pml_params['sx_prime']
-    )
-    Ly = apply_stretched_op(
-      field, d2_2nd_local, d1_2nd, dy, 1, pml_params['sy'], pml_params['sy_prime']
-    )
-    return Lx + Ly
-  else:
-    return d2_2nd_local(field, dx, 0) + d2_2nd_local(field, dy, 1)
-
-
-def laplacian_fd_4th(
-  field: Field, 
-  dx: float, 
+def laplacian_fd(
+  field: Field,
+  dx: float,
   dy: float,
-  pml_params: None | dict[str, Field] = None
+  order: int = 2,
+  pml_params: dict[str, Field] | None = None,
 ) -> Field:
-  """Computes the 2D Laplacian using a 4th-order finite difference scheme.
-  
+  """Computes the 2D Laplacian with a central finite difference stencil.
+
   Args:
     field: Input 2D field array of shape (nx, ny).
     dx: Grid spacing in the x-direction.
     dy: Grid spacing in the y-direction.
-    pml_params: Optional dict containing stretched PML coordinate fields.
-    
+    order: Order of accuracy; one of FD_ORDERS.
+    pml_params: Optional dict with 'sx', 'sy', 'sx_prime' and 'sy_prime'
+                complex coordinate-stretching fields.
+
   Returns:
     The Laplacian of the input field, same shape as input.
   """
-  # Coefficients for 4th order central difference: [-1/12, 4/3, -5/2, 4/3, -1/12].
-  if pml_params:
-    Lx = apply_stretched_op(
-      field, d2_4th, d1_4th, dx, 0, pml_params['sx'], pml_params['sx_prime']
-    )
-    Ly = apply_stretched_op(
-      field, d2_4th, d1_4th, dy, 1, pml_params['sy'], pml_params['sy_prime']
-    )
-    return Lx + Ly
-  else:
-    return d2_4th(field, dx, 0) + d2_4th(field, dy, 1)
+  if order not in STENCILS:
+    raise ValueError(f"Unsupported FD order {order!r}; expected one of {FD_ORDERS}.")
+  d2_fn, d1_fn = STENCILS[order]
 
+  if pml_params is None:
+    return d2_fn(field, dx, 0) + d2_fn(field, dy, 1)
 
-def laplacian_fd_6th(
-  field: Field, 
-  dx: float, 
-  dy: float,
-  pml_params: None | dict[str, Field] = None
-) -> Field:
-  """Computes the 2D Laplacian using a 6th-order finite difference scheme.
-  
-  Args:
-    field: Input 2D field array of shape (nx, ny).
-    dx: Grid spacing in the x-direction.
-    dy: Grid spacing in the y-direction.
-    pml_params: Optional dict containing stretched PML coordinate fields.
-    
-  Returns:
-    The Laplacian of the input field, same shape as input.
-  """
-  # Coefficients: [1/90, -3/20, 3/2, -49/18, 3/2, -3/20, 1/90].
-  if pml_params:
-    Lx = apply_stretched_op(
-      field, d2_6th, d1_6th, dx, 0, pml_params['sx'], pml_params['sx_prime']
-    )
-    Ly = apply_stretched_op(
-      field, d2_6th, d1_6th, dy, 1, pml_params['sy'], pml_params['sy_prime']
-    )
-    return Lx + Ly
-  else:
-    return d2_6th(field, dx, 0) + d2_6th(field, dy, 1)
+  lap_x = apply_stretched_op(
+    field, d2_fn, d1_fn, dx, 0, pml_params['sx'], pml_params['sx_prime']
+  )
+  lap_y = apply_stretched_op(
+    field, d2_fn, d1_fn, dy, 1, pml_params['sy'], pml_params['sy_prime']
+  )
+  return lap_x + lap_y
 
 
 def laplacian_fd_9point(
-  field: Field, 
-  dx: float, 
+  field: Field,
+  dx: float,
   dy: float,
-  pml_params: None | dict[str, Field] = None
+  pml_params: dict[str, Field] | None = None,
 ) -> Field:
   """Computes the 2D Laplacian using an isotropic 9-point stencil (compact 3x3).
 
-  This stencil includes cross-terms to improve isotropy compared to the 5-point stencil.
+  This stencil includes cross-terms to improve isotropy compared to the
+  5-point stencil: L = Dxx + Dyy + (h^2/6) Dxx Dyy, valid for dx == dy.
 
   Args:
-    field: Input 2D field (nx, ny).
+    field: Input 2D field of shape (nx, ny).
     dx: Grid spacing in x.
-    dy: Grid spacing in y.
-    pml_params: Optional dict containing stretched PML coordinate fields.
+    dy: Grid spacing in y; must equal dx.
+    pml_params: Unsupported; must be None.
 
   Returns:
     The Laplacian of the field.
   """
-  # Standard 9-point isotropic stencil for dx=dy=h:
-  # L = Dxx + Dyy + (h^2/6) DxxDyy.
-  if pml_params:
-    raise NotImplementedError("Complex coordinate stretching not yet implemented for 9-point stencil.")
-
+  if pml_params is not None:
+    raise NotImplementedError(
+      "Complex coordinate stretching is not implemented for the 9-point "
+      "stencil. Use use_complex_stretching=False, or an fd_order in "
+      f"{FD_ORDERS}."
+    )
   if dx != dy:
-    raise ValueError("dx and dy must be equal for 9-point stencil.")
-  
-  Dxx_u = (
-    jnp.roll(field, -1, axis=0) - 2 * field + jnp.roll(field, 1, axis=0)
-  ) / (dx**2)
-  Dyy_u = (
-    jnp.roll(field, -1, axis=1) - 2 * field + jnp.roll(field, 1, axis=1)
-  ) / (dy**2)
-  
-  # We apply Dxx to Dyy_u.
-  DxxDyy_u = (
-    jnp.roll(Dyy_u, -1, axis=0) - 2 * Dyy_u + jnp.roll(Dyy_u, 1, axis=0)
-  ) / (dx**2)
-  
-  # L = Dxx + Dyy + (dx**2/6) * DxxDyy (assuming dx=dy).
-  return Dxx_u + Dyy_u + (dx**2 / 6.0) * DxxDyy_u
+    raise ValueError(
+      f"The 9-point stencil requires dx == dy, got dx={dx!r}, dy={dy!r}."
+    )
+
+  dxx_u = d2_2nd(field, dx, 0)
+  dyy_u = d2_2nd(field, dy, 1)
+  dxx_dyy_u = d2_2nd(dyy_u, dx, 0)
+  return dxx_u + dyy_u + (dx**2 / 6.0) * dxx_dyy_u
 
 
 def get_spectral_k_grids(
-  nx: int, 
-  ny: int, 
-  dx: float, 
-  dy: float
+  nx: int,
+  ny: int,
+  dx: float,
+  dy: float,
 ) -> tuple[Field, Field]:
   """Generates the wavenumber grids (kx, ky) for spectral methods.
-  
+
   Args:
     nx: Number of grid points in the x-direction.
     ny: Number of grid points in the y-direction.
     dx: Grid spacing in the x-direction.
     dy: Grid spacing in the y-direction.
-    
+
   Returns:
     A tuple (kx_grid, ky_grid) of 2D arrays containing the wavenumbers.
   """
@@ -246,12 +199,12 @@ def get_spectral_k_grids(
 
 def laplacian_spectral(field: Field, kx_grid: Field, ky_grid: Field) -> Field:
   """Computes the 2D Laplacian using the pseudo-spectral method (FFT).
-  
+
   Args:
     field: Input 2D field array of shape (nx, ny).
     kx_grid: 2D array of x-wavenumbers.
     ky_grid: 2D array of y-wavenumbers.
-    
+
   Returns:
     The Laplacian of the input field, same shape as input.
   """
