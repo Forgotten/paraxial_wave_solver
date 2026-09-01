@@ -1,12 +1,16 @@
 
-import os
-import sys
+"""Absorbing-layer PML versus complex coordinate stretching.
+
+Propagates a tilted Gaussian into the x boundary under each treatment and
+compares both against the analytical tilted beam in the interior.
+
+Run after installing the package (`pip install -e .`):
+
+    python examples/pml_comparison.py
+"""
 
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-
-# Add project root to path.
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import paraxial_wave_solver as pws
 
