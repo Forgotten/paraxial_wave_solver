@@ -14,7 +14,12 @@ from _plotting import plot_benchmark, relative_l2_error
 import paraxial_wave_solver as pws
 
 
-def run_simulation(p_mode, l_mode, output_filename, use_x64=True):
+def run_simulation(
+  p_mode: int,
+  l_mode: int,
+  output_filename: str,
+  use_x64: bool = True,
+) -> float:
   """Propagates a single LG mode and writes its benchmark figure.
 
   Args:
@@ -23,6 +28,9 @@ def run_simulation(p_mode, l_mode, output_filename, use_x64=True):
     output_filename: File to write the benchmark figure to.
     use_x64: Run in float64. The envelope itself is well within float32
              range, but float64 takes the error from ~2e-5 to ~3e-13.
+
+  Returns:
+    The final relative L2 error against the analytical envelope.
   """
   if use_x64:
     pws.enable_x64()

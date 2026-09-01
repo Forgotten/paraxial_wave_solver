@@ -66,7 +66,6 @@ def fresnel_integral_diffraction(
   return field
 
 
-
 def get_square_aperture_analytical(
     sim_config: pws.SimulationConfig,
     width: float,

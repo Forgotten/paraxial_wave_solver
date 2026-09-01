@@ -15,8 +15,23 @@ import matplotlib.pyplot as plt
 import paraxial_wave_solver as pws
 
 
-def get_tilted_gaussian_analytical(sim_config, w0, theta, z):
-  """Computes analytical tilted Gaussian beam."""
+def get_tilted_gaussian_analytical(
+  sim_config: pws.SimulationConfig,
+  w0: float,
+  theta: float,
+  z: float,
+) -> pws.Field:
+  """Computes the analytical field of a tilted Gaussian beam at distance z.
+
+  Args:
+    sim_config: Simulation configuration.
+    w0: Beam waist radius at z=0.
+    theta: Tilt angle in radians in the x-z plane.
+    z: Propagation distance along the z-axis.
+
+  Returns:
+    Complex 2D field array of shape (nx, ny).
+  """
   k0 = sim_config.k0
   z_R = k0 * w0**2 / 2.0
 

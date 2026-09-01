@@ -43,7 +43,9 @@ def build_config(n2: float) -> pws.SimulationConfig:
   )
 
 
-def run_kerr(amplitude: float, n2: float, dealias: bool = True):
+def run_kerr(
+  amplitude: float, n2: float, dealias: bool = True
+) -> tuple[pws.SimulationConfig, pws.Field, pws.Field, pws.Field]:
   """Propagates a Gaussian of the given peak amplitude through a Kerr medium.
 
   Args:
