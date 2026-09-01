@@ -1,12 +1,16 @@
-import os
-import sys
+"""Superposed Laguerre-Gaussian modes through chunks of Von Karman turbulence.
+
+Each chunk draws a fresh medium; because the medium is passed to solve() as an
+argument rather than closed over, all chunks share one compiled solver.
+
+Run after installing the package (`pip install -e .`):
+
+    python examples/turbulence_propagation.py
+"""
 
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-
-# Add project root to path.
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import paraxial_wave_solver as pws
 
@@ -25,7 +29,8 @@ def initialize_laguerre(
     sim_config: Simulation configuration.
     w0: Beam waist radius in meters.
     power: Total laser power in Watts.
-    modes: Optional list of (p, l) mode tuples. Defaults to [(0, 1), (1, 4), (0, -6), (1, 9)].
+    modes: Optional list of (p, l) mode tuples. Defaults to
+           [(0, 1), (1, 4), (0, -6), (1, 9)].
 
   Returns:
     Callable lg_beam(z) returning the composite beam at distance z.
@@ -44,7 +49,7 @@ def initialize_laguerre(
       c * pws.laguerre_gaussian_beam(
         sim_config, w0=w0, p=p, l=l, z=z, power=power, envelope_only=True
       )
-      for c, (p, l) in zip(coeffs, modes) if c != 0.0
+      for c, (p, l) in zip(coeffs, modes, strict=True) if c != 0.0
     ]
     return sum(terms)
 
@@ -139,7 +144,8 @@ def main(N_simulations, Cn2, output_filename, coeffs=None):
     N_simulations: Number of sequential propagation chunks to simulate.
     Cn2: Refractive index structure constant for turbulence strength.
     output_filename: Output image filename for benchmark plots.
-    coeffs: Optional vector of superposition coefficients. Defaults to [1.0, 0.0, 1.0, 1.0].
+    coeffs: Optional vector of superposition coefficients. Defaults to
+            [1.0, 0.0, 1.0, 1.0].
   """
   if coeffs is None:
     coeffs = jnp.array([1.0, 0.0, 1.0, 1.0])
