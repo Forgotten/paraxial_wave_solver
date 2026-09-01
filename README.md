@@ -19,6 +19,9 @@ atmospheric or underwater turbulence.
 - **Analytical beams.** Gaussian, Laguerre-Gaussian and Hermite-Gaussian modes,
   branchless in `z`, so they can be `jit`-ed and `vmap`-ed over propagation
   distance.
+- **Beyond the linear paraxial problem.** Optional Kerr nonlinearity, complex
+  refractive index for absorption and gain, a wide-angle propagator, 4th-order
+  splitting and 2/3-rule dealiasing — all opt-in, with defaults unchanged.
 - **Typed and linted.** Type hints throughout; `ruff` clean.
 
 ## Installation
@@ -124,6 +127,82 @@ The limit tightens as the grid is refined — it scales as `dx**2` — so a run 
 is stable at one resolution may not be at twice the resolution.
 `split_step` has no such restriction.
 
+## Optional numerical schemes
+
+Every option below defaults to off, so existing code is unaffected.
+
+### Nonlinear media
+
+Set `n2` on the simulation config to add an intensity-dependent index
+`n2 * |psi|**2`, turning the propagation into a nonlinear Schroedinger
+equation. Both steppers implement it; the split-step form is a pure phase, so
+it conserves power exactly.
+
+```python
+sim_config = pws.SimulationConfig(..., n2=0.02)
+```
+
+Above the critical power the nonlinear lens beats diffraction and the beam
+self-focuses. `examples/kerr_self_focusing.py` sweeps through that threshold.
+
+### Absorption and gain
+
+`delta_n_fn` may return complex values. A positive imaginary part absorbs, at
+the rate `exp(-2 * k0 * Im(delta_n) * z)` in power; a negative one amplifies.
+
+```python
+solver = pws.ParaxialWaveSolver(
+    sim_config, solver_config, pml_config,
+    lambda z, medium: 0.01j,      # uniform absorption
+)
+```
+
+### Higher-order splitting
+
+`splitting_order=4` uses a Yoshida composition of three Strang sub-steps, the
+middle one running backwards. It costs three times as much per step, so it pays
+off once the step size is small enough to be in the asymptotic regime — past
+that point it wins comfortably at equal cost. Measured through a strongly
+refracting medium over `lz=20`:
+
+| steps | Strang (order 2) | Yoshida (order 4) |
+|---|---|---|
+| 160 | 3.0e-02 | 1.5e-02 |
+| 320 | 7.1e-03 | 2.0e-03 |
+| 640 | 1.8e-03 | 1.5e-04 |
+| 1280 | 4.4e-04 | 1.2e-05 |
+
+The PML attenuation is applied once per full step rather than inside each
+sub-step: a backwards sub-step through a damping term would amplify instead of
+absorb. For `splitting_order=2` the two placements coincide exactly.
+
+### Wide-angle propagation
+
+`propagator='wide_angle'` replaces the small-angle operator with the exact
+square root, `exp(1j * dz * (sqrt(k**2 - k_perp**2) - k))`. In Fourier space
+this is a diagonal multiplier, so the exact root costs the same as the paraxial
+form and no Pade approximation is needed. Components beyond the light line get
+an imaginary root and decay, which is the correct treatment of evanescent
+waves rather than mis-propagating them.
+
+The two agree to `O(theta**4)`, where `theta` is the divergence angle, so the
+difference only matters for tightly focused beams:
+
+| `w0` | `theta` | difference |
+|---|---|---|
+| 0.6 | 0.53 | 1.2e-01 |
+| 0.8 | 0.40 | 3.1e-02 |
+| 1.2 | 0.27 | 5.3e-03 |
+| 1.6 | 0.20 | 1.6e-03 |
+
+### Dealiasing
+
+`dealias=True` applies the 2/3 rule, zeroing the upper third of each transverse
+wavenumber axis. A cubic nonlinearity spreads energy to three times its input
+wavenumber, and anything past Nyquist folds back onto the grid as spurious
+low-frequency structure. The mask folds into the precomputed propagator, so it
+costs nothing per step. Worth enabling whenever `n2` is non-zero.
+
 ## Usage
 
 ### Inhomogeneous media
@@ -212,6 +291,7 @@ to 3.5e-13.
 | `dz`, `nz` | Propagation step size and number of steps |
 | `wavelength` | Vacuum wavelength |
 | `n0` | Background refractive index (default `1.0`) |
+| `n2` | Kerr coefficient (default `0.0`, the linear problem) |
 
 Derived properties: `k0` (vacuum wavenumber), `k` (`2*pi*n0/wavelength`), and
 `lx`, `ly`, `lz` (domain extents).
@@ -224,6 +304,12 @@ Derived properties: `k0` (vacuum wavenumber), `k` (`2*pi*n0/wavelength`), and
 | `stepper` | `'rk4'`, `'split_step'` | z-propagation scheme |
 | `fd_order` | `2`, `4`, `6` | Finite difference accuracy |
 | `compact` | `bool` | Isotropic 9-point stencil; requires `dx == dy` |
+| `splitting_order` | `2`, `4` | Strang, or a Yoshida composition |
+| `propagator` | `'paraxial'`, `'wide_angle'` | Diffraction operator |
+| `dealias` | `bool` | Apply the 2/3 rule |
+
+The last three act on the split-step propagator and are rejected with any other
+stepper.
 
 ### `PMLConfig`
 
@@ -265,6 +351,7 @@ Run these after `pip install -e .`:
 | `random_media.py` | Propagation through a random medium |
 | `pml_comparison.py` | Absorbing layer versus coordinate stretching |
 | `turbulence_propagation.py` | LG superposition through Von Karman turbulence |
+| `kerr_self_focusing.py` | Self-focusing, dealiasing, and 2nd vs 4th order splitting |
 | `demo.ipynb` | Notebook walkthrough of both solver families |
 
 ```bash
