@@ -3,8 +3,7 @@ import jax.numpy as jnp
 from jax import lax, jit
 from jax.tree_util import Partial
 from functools import partial
-from typing import Callable, Tuple, Any, Dict, Optional, Union
-
+from typing import Callable, Tuple, Any
 from .config import SimulationConfig, SolverConfig, PMLConfig, Field
 from .operators import (
   laplacian_fd_2nd, laplacian_fd_4th, laplacian_fd_6th,
@@ -16,7 +15,7 @@ from .pml import generate_pml_profile
 def get_laplacian_fn(
   config: SolverConfig,
   sim_config: SimulationConfig,
-  pml_params: Optional[Dict[str, Field]] = None
+  pml_params: None | dict[str, Field] = None
 ) -> Callable[[Field], Field]:
   """Returns the appropriate Laplacian based on the solver configuration.
 
@@ -240,20 +239,20 @@ class ParaxialWaveSolver:
     # wrapping it again is harmless. For safety with JIT, we wrap it.
     self.n_ref_fn_partial = Partial(n_ref_fn)
     
-    # Setup step function using Partial to be JIT-friendly
+    # Setup step function using Partial to be JIT-friendly.
     if (solver_config.method == 'spectral' and 
         solver_config.stepper == 'split_step'):
       kx, ky = get_spectral_k_grids(sim_config.nx, sim_config.ny, 
                                     sim_config.dx, sim_config.dy)
       
-      # For spectral, we currently fallback to absorbing layer even if stretching was requested?
+      # For spectral, we currently fallback to absorbing layer even if stretching was requested.
       # Spectral method with coordinate stretching is different (requires deformed Fourier transform).
       # We'll use the 'sigma_sum' from the dict if available for the absorbing layer.
       
       absorption = self.pml_profile
       if isinstance(pml_data, dict):
-          # Fallback for spectral: use the scalar profile
-          absorption = pml_data['sigma_sum']
+        # Fallback for spectral: use the scalar profile.
+        absorption = pml_data['sigma_sum']
 
       self.step_fn = Partial(
         step_split_step,
@@ -276,12 +275,12 @@ class ParaxialWaveSolver:
       )
       self.step_fn = Partial(step_rk4, rhs_fn=rhs)
 
-  def solve(self, psi_0: Field, z_0: float) -> Tuple[Field, Field]:
+  def solve(self, psi_0: Field, z_0: float = 0.0) -> Tuple[Field, Field]:
     """Propagates the initial field psi_0 through the medium.
     
     Args:
       psi_0: Initial complex field amplitude at z=z_0.
-      z_0: Initial z position.
+      z_0: Initial z position (default: 0.0).
       
     Returns:
       psi_final: Field at z=lz.
@@ -290,10 +289,10 @@ class ParaxialWaveSolver:
     zs = jnp.linspace(z_0, self.sim_config.lz, self.sim_config.nz)
     dz = self.sim_config.dz
     
-    # Call the JIT-compiled scan loop
+    # Call the JIT-compiled scan loop.
     psi_final, psi_history = _solve_scan(psi_0, zs, dz, self.step_fn)
     
-    # Prepend initial condition to history
+    # Prepend initial condition to history.
     psi_history = jnp.concatenate([psi_0[None, ...], psi_history], axis=0)
     
     return psi_final, psi_history

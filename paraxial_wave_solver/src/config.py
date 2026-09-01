@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, Tuple, Literal, TypeAlias
+from typing import Literal, TypeAlias
 import jax
 
 # Custom Type Alias for 2D/3D Fields
@@ -25,7 +25,7 @@ class SimulationConfig:
   dz: float
   nz: int
   wavelength: float
-  n0: float
+  n0: float = 1.0
 
   @property
   def k0(self) -> float:
