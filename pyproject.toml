@@ -13,8 +13,8 @@ authors = [
   {name = "Leonardo Zepeda-Nunez"}, 
 ]
 dependencies = [
-    "jax",
-    "jaxlib",
+    "jax>=0.4.30",
+    "jaxlib>=0.4.30",
     "numpy",
     "scipy",
     "matplotlib",
@@ -23,8 +23,20 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "ruff",
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["paraxial_wave_solver/tests"]
 pythonpath = ["."]
+
+[tool.ruff]
+line-length = 88
+indent-width = 2
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E741"]  # `l` is the standard name for the LG azimuthal index.
+
+[tool.ruff.format]
+indent-style = "space"

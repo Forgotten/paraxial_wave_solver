@@ -1,28 +1,10 @@
-from .src.config import SimulationConfig, SolverConfig, PMLConfig, Field
-from .src.solvers import ParaxialWaveSolver
-from .src.utils import (
-  gaussian_beam,
-  laguerre_gaussian_beam,
-  hermite_gaussian_beam,
-  get_analytical_beam,
-  get_laguerre_gaussian_analytical,
-  get_hermite_gaussian_analytical,
-  random_medium,
-  random_medium_spectral,
-)
+"""A JAX-based solver for the paraxial wave equation in 3D.
 
-__all__ = [
-  "SimulationConfig",
-  "SolverConfig",
-  "PMLConfig",
-  "Field",
-  "ParaxialWaveSolver",
-  "gaussian_beam",
-  "laguerre_gaussian_beam",
-  "hermite_gaussian_beam",
-  "get_analytical_beam",
-  "get_laguerre_gaussian_analytical",
-  "get_hermite_gaussian_analytical",
-  "random_medium",
-  "random_medium_spectral",
-]
+The public API is defined in `paraxial_wave_solver.src` and re-exported here,
+so that `import paraxial_wave_solver as pws` gives access to everything.
+"""
+
+from .src import *  # noqa: F401,F403
+from .src import __all__ as _src_all
+
+__all__ = list(_src_all)
