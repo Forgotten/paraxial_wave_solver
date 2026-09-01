@@ -11,6 +11,8 @@ Run after installing the package (`pip install -e .`):
     python examples/turbulence_diagnostics.py
 """
 
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -35,7 +37,9 @@ def build_config() -> pws.SimulationConfig:
   )
 
 
-def run(cn2: float, seed: int = 0):
+def run(
+  cn2: float, seed: int = 0
+) -> tuple[dict[str, Any], pws.Field, pws.Field, pws.SimulationConfig]:
   """Propagates an LG_01 beam through one realization of turbulence.
 
   Args:

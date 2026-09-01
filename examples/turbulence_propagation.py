@@ -8,6 +8,8 @@ Run after installing the package (`pip install -e .`):
     python examples/turbulence_propagation.py
 """
 
+from collections.abc import Callable
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -21,7 +23,7 @@ def initialize_laguerre(
   w0: float,
   power: float,
   modes: None | list[tuple[int, int]] = None,
-):
+) -> Callable[[float], pws.Field]:
   """Initializes a superposition of LG beams from a vector of coefficients.
 
   Args:
@@ -56,7 +58,11 @@ def initialize_laguerre(
   return lg_beam
 
 
-def run_simulation_total(coeffs, Cn2, N_simulations=3):
+def run_simulation_total(
+  coeffs: list[float] | jax.Array,
+  Cn2: float,
+  N_simulations: int = 3,
+) -> tuple[pws.Field, pws.Field, pws.Field, float, pws.SimulationConfig]:
   """Runs beam propagation simulation over multiple chunks of turbulent medium.
 
   Args:

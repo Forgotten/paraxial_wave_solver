@@ -6,13 +6,9 @@ evaluated inside the propagation loop. Doing so records a handful of numbers
 per plane instead of an (nx, ny) complex field, which is usually the
 difference between a few kilobytes and a few gigabytes.
 
-Moments follow the ISO 11146 second-moment definitions: widths are D4-sigma,
-and `m_squared` uses the full space-frequency covariance, including the
-cross term that a naive product of real- and Fourier-space widths omits.
-
 Unless a mask is passed, quantities are computed over the whole grid. When a
-PML is present its absorbing region is part of that grid, so trim the field
-before measuring if the layer would bias the result.
+PML is present its absorbing region is part of that grid, so one needs to 
+trim the field before measuring as the PML may bias the result.
 """
 
 from typing import Any
