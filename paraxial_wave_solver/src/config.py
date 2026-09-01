@@ -24,6 +24,7 @@ import jax
 Field: TypeAlias = jax.Array
 
 FD_ORDERS = (2, 4, 6)
+SPLITTING_ORDERS = (2, 4)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +40,9 @@ class SimulationConfig:
     nz: Number of steps to propagate in the z-direction.
     wavelength: Wavelength of the optical field in vacuum.
     n0: Background refractive index (vacuum/atmosphere = 1.0, water = 1.33).
+    n2: Kerr coefficient. Non-zero adds an intensity-dependent index
+        n2 * |psi|**2 to the medium, turning the propagation into a nonlinear
+        Schroedinger equation. Zero (the default) is the linear problem.
   """
   nx: int
   ny: int
@@ -48,6 +52,7 @@ class SimulationConfig:
   nz: int
   wavelength: float
   n0: float = 1.0
+  n2: float = 0.0
 
   def __post_init__(self) -> None:
     for name in ('nx', 'ny', 'nz'):
@@ -142,11 +147,32 @@ class SolverConfig:
              method='finite_difference' and dx == dy.
     stepper: Z-propagation scheme ('rk4' or 'split_step'). 'split_step'
              requires method='spectral'.
+    splitting_order: Order of accuracy in z for the split-step composition.
+                     2 is Strang splitting; 4 is a Yoshida composition of
+                     three Strang steps, so it costs three times as much per
+                     step but usually permits a far larger dz. Requires
+                     stepper='split_step'.
+    propagator: Diffraction operator. 'paraxial' is the usual
+                exp(-1j * dz * k_perp**2 / (2 * k)) small-angle form.
+                'wide_angle' uses the exact square-root operator
+                exp(1j * dz * (sqrt(k**2 - k_perp**2) - k)), which stays
+                accurate at large angles and lets evanescent components decay
+                rather than mis-propagating them. In Fourier space the exact
+                root is a diagonal multiplier, so no Pade approximation is
+                needed and it costs the same as the paraxial form. Requires
+                stepper='split_step'.
+    dealias: Apply the 2/3 rule to the split-step propagator, zeroing the
+             upper third of each transverse wavenumber axis. Matters once n2
+             is non-zero, where the cubic term aliases energy back onto the
+             grid. Requires stepper='split_step'.
   """
   method: Literal['finite_difference', 'spectral']
   fd_order: int = 2
   compact: bool = False
   stepper: Literal['rk4', 'split_step'] = 'rk4'
+  splitting_order: int = 2
+  propagator: Literal['paraxial', 'wide_angle'] = 'paraxial'
+  dealias: bool = False
 
   def __post_init__(self) -> None:
     if self.method not in ('finite_difference', 'spectral'):
@@ -175,3 +201,24 @@ class SolverConfig:
         f"Unsupported fd_order {self.fd_order!r}; expected one of "
         f"{FD_ORDERS}."
       )
+    if self.splitting_order not in SPLITTING_ORDERS:
+      raise ValueError(
+        f"Unsupported splitting_order {self.splitting_order!r}; expected one "
+        f"of {SPLITTING_ORDERS}."
+      )
+    if self.propagator not in ('paraxial', 'wide_angle'):
+      raise ValueError(
+        f"Unsupported propagator {self.propagator!r}; expected 'paraxial' or "
+        "'wide_angle'."
+      )
+    if self.stepper != 'split_step':
+      # These three all act on the split-step propagator, which RK4 and the
+      # finite difference operators do not build.
+      for name, default in (('splitting_order', 2),
+                            ('propagator', 'paraxial'),
+                            ('dealias', False)):
+        if getattr(self, name) != default:
+          raise ValueError(
+            f"{name}={getattr(self, name)!r} requires stepper='split_step', "
+            f"got stepper={self.stepper!r}."
+          )

@@ -25,7 +25,13 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 
-from .config import Field, PMLConfig, SimulationConfig, SolverConfig
+from .config import (
+  SPLITTING_ORDERS,
+  Field,
+  PMLConfig,
+  SimulationConfig,
+  SolverConfig,
+)
 from .operators import (
   get_spectral_k_grids,
   laplacian_fd,
@@ -157,47 +163,176 @@ def _make_laplacian_fn(
   return laplacian
 
 
+def _dealias_mask(sim_config: SimulationConfig) -> Field:
+  """Returns the 2/3-rule mask, zero on the upper third of each k axis.
+
+  A cubic nonlinearity spreads energy to three times the wavenumber of its
+  input, and anything past the Nyquist limit folds back onto the grid as
+  spurious low-frequency content. Zeroing the top third of each axis leaves no
+  aliased product inside the retained band.
+
+  Args:
+    sim_config: Simulation configuration.
+
+  Returns:
+    A real (nx, ny) array of ones and zeros.
+  """
+  kx, ky = get_spectral_k_grids(
+    sim_config.nx, sim_config.ny, sim_config.dx, sim_config.dy
+  )
+  cutoff_x = (2.0 / 3.0) * jnp.pi / sim_config.dx
+  cutoff_y = (2.0 / 3.0) * jnp.pi / sim_config.dy
+  return ((jnp.abs(kx) <= cutoff_x) & (jnp.abs(ky) <= cutoff_y)).astype(
+    jnp.result_type(float)
+  )
+
+
+def _diffraction_operator(
+  sim_config: SimulationConfig,
+  kx: Field,
+  ky: Field,
+  step: float,
+  propagator: str,
+  mask: Field | None,
+) -> Field:
+  """Builds the Fourier-space diffraction multiplier for one sub-step.
+
+  The paraxial form is the usual exp(-1j * h * k_perp**2 / (2 k)). The
+  wide-angle form uses the exact square root, exp(1j * h * (kz - k)) with
+  kz = sqrt(k**2 - k_perp**2); because the operator is diagonal in Fourier
+  space the root needs no Pade approximation and costs the same to apply.
+  Beyond the light line, kz turns imaginary and the multiplier decays, which
+  is the correct treatment of evanescent components.
+
+  Args:
+    sim_config: Simulation configuration.
+    kx: Transverse wavenumber grid in x.
+    ky: Transverse wavenumber grid in y.
+    step: Propagation distance for this sub-step; may be negative.
+    propagator: 'paraxial' or 'wide_angle'.
+    mask: Optional dealiasing mask folded into the multiplier.
+
+  Returns:
+    A complex (nx, ny) array.
+  """
+  k = sim_config.k0 * sim_config.n0
+  k_perp_squared = kx**2 + ky**2
+
+  if propagator == 'wide_angle':
+    # Cast before the root so that evanescent components (k_perp > k) give a
+    # decaying imaginary branch instead of nan.
+    kz = jnp.sqrt((k**2 - k_perp_squared).astype(
+      jnp.result_type(k_perp_squared, jnp.complex64)
+    ))
+    operator = jnp.exp(1j * step * (kz - k))
+  else:
+    operator = jnp.exp(-1j * step * k_perp_squared / (2 * k))
+
+  if mask is not None:
+    operator = operator * mask
+  return operator
+
+
+def splitting_weights(order: int) -> tuple[float, ...]:
+  """Returns the sub-step fractions of a symmetric splitting composition.
+
+  Order 2 is a single Strang step. Order 4 is the Yoshida composition
+  S(w1 h) S(w0 h) S(w1 h) with w1 = 1 / (2 - 2**(1/3)) and w0 = 1 - 2 w1, in
+  which the middle sub-step runs backwards. The fractions sum to one, so the
+  composition advances by exactly h.
+
+  Args:
+    order: Order of accuracy in z; one of SPLITTING_ORDERS.
+
+  Returns:
+    The sub-step fractions, in application order.
+  """
+  if order == 2:
+    return (1.0,)
+  if order == 4:
+    w1 = 1.0 / (2.0 - 2.0 ** (1.0 / 3.0))
+    return (w1, 1.0 - 2.0 * w1, w1)
+  raise ValueError(
+    f"Unsupported splitting_order {order!r}; expected one of "
+    f"{SPLITTING_ORDERS}."
+  )
+
+
 def _make_split_step_kernel(
   sim_config: SimulationConfig,
   delta_n_fn: DeltaNFn | None,
   has_pml: bool,
+  weights: tuple[float, ...] = (1.0,),
 ) -> Callable[[Field, Any, Operators, Any], Field]:
-  """Builds a symmetric (Strang) split-step Fourier kernel.
+  """Builds a symmetric split-step Fourier kernel.
 
-  Each step is a half-step of the refraction/absorption operator, a full step
-  of diffraction in Fourier space, and a second half-step. The diffraction
-  operator and the PML attenuation are z-independent and arrive precomputed in
-  `operators`; in vacuum without a PML the potential half-steps vanish
-  entirely and are omitted at build time.
+  Each sub-step is a half-step of the refraction operator, a full step of
+  diffraction in Fourier space, and a second half-step; `weights` composes
+  several such sub-steps to raise the order in z. Diffraction operators arrive
+  precomputed in `operators`, one per sub-step.
+
+  The PML attenuation is applied once per full step, symmetrically around the
+  whole composition, rather than inside each sub-step. A composition of order
+  four runs its middle sub-step backwards, and a backwards sub-step through a
+  damping term would amplify rather than absorb; keeping the absorber outside
+  leaves it monotone. For order two the two placements coincide exactly, so
+  this is not a behaviour change.
+
+  In vacuum without a PML the potential half-steps vanish and are omitted at
+  build time, leaving only the transforms.
 
   Args:
     sim_config: Simulation configuration.
     delta_n_fn: Refractive index perturbation, or None for vacuum.
     has_pml: Whether the PML profile is non-trivial.
+    weights: Sub-step fractions from `splitting_weights`.
 
   Returns:
     A callable (psi, z, operators, medium) -> psi at z + dz.
   """
   k0 = sim_config.k0
-  half_dz = 0.5 * sim_config.dz
-  phase_scale = 1j * k0 * half_dz
-  needs_half = has_pml or delta_n_fn is not None
+  dz = sim_config.dz
+  n2 = sim_config.n2
+  kerr = n2 != 0.0
+  has_potential = delta_n_fn is not None or kerr
 
-  def half_operator(z: Any, operators: Operators, medium: Any) -> Any:
-    if delta_n_fn is None:
-      return operators['pml_half']
-    phase = jnp.exp(phase_scale * delta_n_fn(z + half_dz, medium))
-    if has_pml:
-      return operators['pml_half'] * phase
-    return phase
+  def potential(psi: Field, z: Any, half_h: float, medium: Any) -> Any:
+    """exp(1j k0 (delta_n + n2 |psi|^2) * half_h) for one half sub-step."""
+    index = 0.0
+    if delta_n_fn is not None:
+      index = delta_n_fn(z, medium)
+    if kerr:
+      index = index + n2 * jnp.abs(psi)**2
+    return jnp.exp((1j * k0 * half_h) * index)
 
   def step(psi: Field, z: Any, operators: Operators, medium: Any) -> Field:
-    if needs_half:
-      half = half_operator(z, operators, medium)
-      psi = psi * half
-    psi = jnp.fft.ifft2(jnp.fft.fft2(psi) * operators['linear'])
-    if needs_half:
-      psi = psi * half
+    if has_pml:
+      psi = psi * operators['pml_half']
+
+    offset = 0.0
+    for index, fraction in enumerate(weights):
+      sub_h = fraction * dz
+      half_h = 0.5 * sub_h
+      # The medium is sampled at the midpoint of the sub-step.
+      z_mid = z + offset + half_h
+
+      if has_potential:
+        first = potential(psi, z_mid, half_h, medium)
+        psi = psi * first
+
+      psi = jnp.fft.ifft2(jnp.fft.fft2(psi) * operators['linear'][index])
+
+      if has_potential:
+        # The Kerr phase is intensity dependent, and diffraction has changed
+        # the intensity, so the trailing half-step is re-evaluated. Without
+        # Kerr the potential is unchanged and the first factor is reused.
+        second = potential(psi, z_mid, half_h, medium) if kerr else first
+        psi = psi * second
+
+      offset += sub_h
+
+    if has_pml:
+      psi = psi * operators['pml_half']
     return psi
 
   return step
@@ -223,12 +358,16 @@ def _make_rk4_kernel(
   """
   k0 = sim_config.k0
   dz = sim_config.dz
+  n2 = sim_config.n2
+  kerr = n2 != 0.0
   diffraction_coeff = 1j / (2 * k0 * sim_config.n0)
 
   def rhs(psi: Field, z: Any, operators: Operators, medium: Any) -> Field:
     out = diffraction_coeff * laplacian_fn(psi, operators)
     if delta_n_fn is not None:
       out = out + (1j * k0) * delta_n_fn(z, medium) * psi
+    if kerr:
+      out = out + (1j * k0 * n2) * jnp.abs(psi)**2 * psi
     if apply_sigma:
       out = out - operators['sigma'] * psi
     return out
@@ -355,15 +494,23 @@ class ParaxialWaveSolver:
       kx, ky = get_spectral_k_grids(
         sim_config.nx, sim_config.ny, sim_config.dx, sim_config.dy
       )
-      # Precomputed once: the diffraction operator does not depend on z.
-      operators['linear'] = jnp.exp(
-        -1j * sim_config.dz * (kx**2 + ky**2)
-        / (2 * sim_config.k0 * sim_config.n0)
+      mask = (
+        _dealias_mask(sim_config) if solver_config.dealias else None
       )
+      # Precomputed once: the diffraction operators do not depend on z. One
+      # per sub-step of the splitting composition.
+      weights = splitting_weights(solver_config.splitting_order)
+      operators['linear'] = [
+        _diffraction_operator(
+          sim_config, kx, ky, fraction * sim_config.dz,
+          solver_config.propagator, mask,
+        )
+        for fraction in weights
+      ]
       if has_pml:
         operators['pml_half'] = jnp.exp(-pml_data.sigma * (sim_config.dz / 2))
       self._step_fn = _make_split_step_kernel(
-        sim_config, delta_n_fn, has_pml
+        sim_config, delta_n_fn, has_pml, weights
       )
     else:
       if solver_config.method == 'spectral':
