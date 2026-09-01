@@ -524,3 +524,84 @@ def test_unstable_rk4_step_warns():
       sim_config, SolverConfig(method='finite_difference', fd_order=4),
       NO_PML,
     )
+
+
+# --------------------------------------------------------------------------
+# The documented equation
+# --------------------------------------------------------------------------
+
+def _documented_rhs(psi, sim_config, delta_n, sigma):
+  """d(psi)/dz exactly as written in the config.py docstring and the README.
+
+  Deliberately written out longhand from the documentation rather than reusing
+  anything from solvers.py, so that this is a check of the docs against the
+  code and not of the code against itself.
+  """
+  from paraxial_wave_solver.src.operators import get_spectral_k_grids
+  kx, ky = get_spectral_k_grids(
+    sim_config.nx, sim_config.ny, sim_config.dx, sim_config.dy
+  )
+  laplacian = jnp.fft.ifft2(-(kx**2 + ky**2) * jnp.fft.fft2(psi))
+  return (
+    (1j / (2 * sim_config.k0 * sim_config.n0)) * laplacian
+    + 1j * sim_config.k0
+    * (delta_n + sim_config.n2 * jnp.abs(psi)**2) * psi
+    - sigma * psi
+  )
+
+
+@pytest.mark.parametrize("stepper,splitting_order", [
+  ('split_step', 2),
+  ('split_step', 4),
+  ('rk4', 2),
+])
+@pytest.mark.parametrize("n2,with_medium,with_pml", [
+  (0.0, False, False),
+  (0.0, True, False),
+  (0.05, True, False),
+  (0.05, True, True),
+])
+def test_solver_integrates_the_documented_equation(
+  stepper, splitting_order, n2, with_medium, with_pml, x64
+):
+  """One tiny step reproduces the documented right-hand side.
+
+  Every scheme is supposed to integrate the same equation; this pins the
+  documentation to the implementation, so that a change to either without the
+  other is caught.
+  """
+  nx = ny = 64
+  dx = dy = 0.2
+  dz = 1e-7
+
+  sim_config = SimulationConfig(
+    nx=nx, ny=ny, dx=dx, dy=dy, dz=dz, nz=1, wavelength=1.0, n0=1.0, n2=n2
+  )
+  solver_config = SolverConfig(
+    method='spectral', stepper=stepper,
+    **({'splitting_order': splitting_order} if stepper == 'split_step' else {}),
+  )
+  pml_config = (PMLConfig(width_x=10, width_y=10, strength=3.0)
+                if with_pml else NO_PML)
+
+  x = jnp.arange(nx) * dx
+  y = jnp.arange(ny) * dy
+  r2 = (x[:, None] - nx * dx / 2)**2 + (y[None, :] - ny * dy / 2)**2
+  # A tilt, so the field is genuinely complex and the Laplacian is exercised.
+  psi_0 = (jnp.exp(-r2 / 4.0) * jnp.exp(0.7j * x[:, None])).astype(complex)
+
+  delta_n = (0.03 * jnp.cos(0.6 * x[:, None]) * jnp.cos(0.4 * y[None, :])
+             if with_medium else 0.0)
+  delta_n_fn = (lambda z, medium: delta_n) if with_medium else None
+
+  solver = ParaxialWaveSolver(
+    sim_config, solver_config, pml_config, delta_n_fn
+  )
+  psi_1, _ = solver.solve(psi_0, return_history=False)
+
+  measured = (psi_1 - psi_0) / dz
+  expected = _documented_rhs(
+    psi_0, sim_config, delta_n, solver.pml_profile if with_pml else 0.0
+  )
+  error = jnp.linalg.norm(measured - expected) / jnp.linalg.norm(expected)
+  assert float(error) < 1e-6, f"rel error {error}"

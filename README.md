@@ -61,30 +61,144 @@ psi_final, psi_history = solver.solve(psi_0)
 `psi_final` is the envelope at `z_0 + nz * dz`. `psi_history[j]` is the envelope
 at `z_0 + j * save_every * dz`, so index `0` is `psi_0` itself.
 
-## Conventions
+## The equation being solved
 
-Two things are worth knowing before writing any code against this package. Most
-mistakes trace back to one of them.
+Every method in this package integrates the same quantity: the slowly varying
+**envelope** `psi`, not the physical field. This section states exactly what
+`psi` is and exactly what equation it obeys, because both conventions below are
+easy to get wrong and neither is guessable from the API.
 
-**The solver propagates an envelope, not the field.** The physical field is
-`E = psi * exp(1j * k * z)` with `k = 2 * pi * n0 / wavelength`. The solver works
-in `psi`. Analytical beams return the full field by default; pass
-`envelope_only=True` when comparing them against solver output.
+### Derivation
+
+Start from the scalar Helmholtz equation for a monochromatic field `E`, with
+`k0 = 2*pi/wavelength` the vacuum wavenumber and `n(x, y, z)` the refractive
+index:
+
+```
+lap(E) + k0**2 * n**2 * E = 0
+```
+
+Factor out the fast carrier along the propagation axis, `E = psi * exp(1j*k*z)`
+with `k = k0 * n0`. Substituting and cancelling the carrier gives an equation
+that is still exact:
+
+```
+d2(psi)/dz2  +  2*1j*k * d(psi)/dz  +  lap_perp(psi)  +  k0**2 * (n**2 - n0**2) * psi  =  0
+```
+
+Two approximations turn this into what the solver integrates.
+
+**1. The paraxial (slowly varying envelope) approximation** drops the second
+z-derivative, on the grounds that the envelope changes little over a wavelength:
+
+```
+|d2(psi)/dz2|  <<  |2*k * d(psi)/dz|
+```
+
+This is the step that makes the problem an initial-value problem in `z`: one
+first-order equation marching forward, rather than a boundary-value problem.
+It also discards the backward-propagating wave, so there are no reflections
+from index structure.
+
+**2. Weak index contrast.** Writing `n = n0 + delta_n` with `delta_n << n0`,
+
+```
+n**2 - n0**2  =  2*n0*delta_n + delta_n**2  ~=  2*n0*delta_n
+```
+
+What remains, solved for the z-derivative, is the equation this package
+integrates:
+
+```
+d(psi)/dz  =  (1j / (2*k0*n0)) * lap_perp(psi)  +  1j*k0 * delta_n * psi
+```
+
+### The full equation, with every optional term
+
+```
+d(psi)/dz  =  (1j / (2*k0*n0)) * L_perp(psi)
+              +  1j*k0 * (delta_n(x, y, z) + n2*|psi|**2) * psi
+              -  sigma(x, y) * psi
+```
+
+| Term | Meaning | Controlled by |
+|---|---|---|
+| `(1j/(2*k0*n0)) * L_perp(psi)` | Diffraction | `method`, `fd_order`, `propagator` |
+| `1j*k0*delta_n*psi` | Refraction; complex `delta_n` gives absorption or gain | `delta_n_fn` |
+| `1j*k0*n2*\|psi\|**2*psi` | Kerr self-phase modulation | `n2` |
+| `-sigma*psi` | PML absorption, non-physical, zero in the interior | `PMLConfig` |
+
+`L_perp` is the transverse Laplacian `d2/dx2 + d2/dy2`, discretized by the
+chosen `method`. Under complex coordinate stretching it becomes
+
+```
+L_perp  =  (1/s_x) d/dx ( (1/s_x) d/dx )  +  (1/s_y) d/dy ( (1/s_y) d/dy ),
+s = 1 + 1j*sigma
+```
+
+which is where the absorption lives in that mode, and why `sigma` is then not
+also applied as a potential.
+
+With no PML and real `delta_n`, the equation is norm-conserving: the total
+power `sum(|psi|**2)` is invariant. That is what
+`test_energy_conservation_vacuum` checks.
+
+### Wide-angle: the approximation that is not made
+
+`propagator='wide_angle'` skips approximation 1. Rather than dropping the
+second z-derivative, it factors Helmholtz into forward- and backward-travelling
+parts and keeps the forward one:
+
+```
+d(psi)/dz  =  1j * ( sqrt(k**2 + lap_perp) - k ) * psi
+```
+
+The square root of an operator is awkward in general, which is why the
+literature reaches for Pade approximants. In Fourier space it is diagonal, so
+no approximation is needed:
+
+```
+paraxial     multiplier:  exp(-1j * dz * k_perp**2 / (2*k))
+wide-angle   multiplier:  exp( 1j * dz * (sqrt(k**2 - k_perp**2) - k))
+```
+
+Expanding the root for `k_perp << k` gives `-k_perp**2/(2*k)`, so the paraxial
+operator is the leading term of the wide-angle one. Past the light line
+(`k_perp > k`) the root turns imaginary and the multiplier decays, which is the
+correct treatment of evanescent components.
+
+### What the steppers do with it
+
+**`split_step`** alternates the two halves of the equation, each solved exactly
+in its own domain — diffraction in Fourier space, everything else pointwise in
+real space. One Strang step is
+
+```
+psi  <-  N(dz/2) . D(dz) . N(dz/2) . psi
+
+D(h)  in Fourier space:  the multiplier above
+N(h)  in real space:     exp(1j*k0*(delta_n + n2*|psi|**2)*h)
+```
+
+with the PML applied as `exp(-sigma*dz/2)` at each end of the full step.
+`splitting_order=4` composes three such steps with Yoshida weights.
+
+**`rk4`** applies the classic four-stage Runge-Kutta scheme directly to the
+right-hand side above, with `L_perp` a finite-difference stencil or the
+spectral Laplacian.
+
+### Two conventions to keep straight
+
+**The solver propagates an envelope, not the field.** `E = psi * exp(1j*k*z)`
+with `k = 2*pi*n0/wavelength`. Analytical beams return the full field by
+default; pass `envelope_only=True` when comparing them against solver output.
 
 **Refractive index is supplied as a perturbation.** `delta_n_fn(z, medium)` must
 return `delta_n = n - n0`, so **vacuum is zero, not one**. Omit `delta_n_fn`
 entirely and the solver treats the domain as vacuum and drops the refraction term
-altogether. Returning `1.0` for vacuum injects a spurious `exp(1j * k0 * lz)`,
-which stays invisible whenever `k0 * lz` happens to be a multiple of `2 * pi` —
+altogether. Returning `1.0` for vacuum injects a spurious `exp(1j*k0*lz)`,
+which stays invisible whenever `k0*lz` happens to be a multiple of `2*pi` —
 as it is for `wavelength=1.0` with an integer propagation distance.
-
-The envelope obeys
-
-```
-d(psi)/dz = (1j / (2 * k0 * n0)) * lap_perp(psi) + 1j * k0 * delta_n * psi - sigma * psi
-```
-
-where `sigma` is the PML absorption profile.
 
 ## Choosing a solver
 

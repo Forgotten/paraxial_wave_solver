@@ -7,7 +7,7 @@ per plane instead of an (nx, ny) complex field, which is usually the
 difference between a few kilobytes and a few gigabytes.
 
 Unless a mask is passed, quantities are computed over the whole grid. When a
-PML is present its absorbing region is part of that grid, so one needs to 
+PML is present its absorbing region is part of that grid, so one needs to
 trim the field before measuring as the PML may bias the result.
 """
 

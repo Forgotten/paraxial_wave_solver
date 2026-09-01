@@ -2,17 +2,33 @@
 
 The envelope psi obeys
 
-    d(psi)/dz = (1j / (2 * k0 * n0)) * lap_perp(psi)
-                + 1j * k0 * delta_n(x, y, z) * psi
+    d(psi)/dz = (1j / (2 * k0 * n0)) * L_perp(psi)
+                + 1j * k0 * (delta_n(x, y, z) + n2 * |psi|**2) * psi
                 - sigma(x, y) * psi
 
-where delta_n = n - n0 is the refractive index *perturbation* and sigma is the
-PML absorption profile. See `config.py` for the full set of conventions.
+where delta_n = n - n0 is the refractive index *perturbation*, n2 the Kerr
+coefficient and sigma the PML absorption profile. `config.py` carries the
+derivation from Helmholtz and the full set of conventions.
 
-Everything that does not vary with z - the diffraction operator, the PML
-attenuation, the wavenumber grids - is built once in `ParaxialWaveSolver`
-and handed to the kernels as arrays, so the scan body contains only the work
-that genuinely changes from step to step.
+Two families integrate it. The split-step kernel solves each half exactly in
+its own domain - diffraction as a Fourier multiplier, refraction and Kerr
+pointwise in real space - and alternates them:
+
+    psi <- N(dz/2) . D(dz) . N(dz/2) . psi
+
+    D(h) = exp(-1j * h * k_perp**2 / (2*k))                    paraxial
+         = exp( 1j * h * (sqrt(k**2 - k_perp**2) - k))         wide-angle
+    N(h) = exp( 1j * k0 * (delta_n + n2*|psi|**2) * h)
+
+with the PML applied as exp(-sigma*dz/2) at each end of the full step, and
+`splitting_order=4` composing three such steps with Yoshida weights.
+The RK4 kernel instead applies four-stage Runge-Kutta directly to the
+right-hand side, with L_perp a finite-difference stencil or the spectral Laplacian.
+
+Everything that does not vary with z - the diffraction operators, the PML
+attenuation, the wavenumber grids - is built once in `ParaxialWaveSolver` and
+handed to the kernels as arrays, so the scan body contains only the work that
+genuinely changes from step to step.
 """
 
 import functools

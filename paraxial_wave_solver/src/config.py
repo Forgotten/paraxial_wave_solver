@@ -1,17 +1,49 @@
 """Configuration dataclasses for the paraxial wave solver.
 
-Conventions used throughout the package:
+The equation
+------------
 
-  * The physical field is E(x, y, z) = psi(x, y, z) * exp(1j * k * z), with
-    k = 2 * pi * n0 / wavelength. The solver propagates the slowly varying
-    envelope psi, never the full field.
-  * Refractive index is supplied as the *perturbation* delta_n = n - n0, not
-    as n itself. Vacuum is delta_n = 0.
-  * The envelope obeys
-        d(psi)/dz = (1j / (2 * k0 * n0)) * lap_perp(psi)
-                    + 1j * k0 * delta_n * psi
-                    - sigma * psi
-    where sigma is the PML absorption profile.
+Starting from the scalar Helmholtz equation for a monochromatic field E,
+
+    lap(E) + k0**2 * n(x, y, z)**2 * E = 0,        k0 = 2 * pi / wavelength
+
+factor out the carrier along the propagation axis, E = psi * exp(1j * k * z)
+with k = k0 * n0. The result is still exact:
+
+    d2(psi)/dz2 + 2*1j*k * d(psi)/dz + lap_perp(psi)
+        + k0**2 * (n**2 - n0**2) * psi = 0
+
+Two approximations reduce it to what this package integrates. The paraxial
+approximation drops d2(psi)/dz2, which turns the problem into an initial-value
+march in z and discards the backward-travelling wave. Weak index contrast,
+n = n0 + delta_n with delta_n << n0, linearizes n**2 - n0**2 to 2*n0*delta_n.
+Solving for the z-derivative and adding the optional terms:
+
+    d(psi)/dz = (1j / (2 * k0 * n0)) * L_perp(psi)
+                + 1j * k0 * (delta_n(x, y, z) + n2 * |psi|**2) * psi
+                - sigma(x, y) * psi
+
+    L_perp   transverse Laplacian, discretized per `SolverConfig.method`
+    delta_n  index perturbation n - n0; complex values give absorption or gain
+    n2       Kerr coefficient, zero for the linear problem
+    sigma    PML absorption profile, zero in the interior
+
+Under complex coordinate stretching L_perp becomes
+(1/s_x) d/dx((1/s_x) d/dx) + (1/s_y) d/dy((1/s_y) d/dy) with s = 1 + 1j*sigma,
+and the sigma term above is dropped, since the absorption then lives in the
+operator instead.
+
+With `propagator='wide_angle'` the paraxial approximation is not made: the
+diffraction operator is the exact one-way root 1j*(sqrt(k**2 + lap_perp) - k),
+of which the paraxial form is the leading term.
+
+Conventions
+-----------
+
+  * The solver works in the envelope psi, never the full field E.
+  * Refractive index is supplied as the *perturbation* delta_n = n - n0, so
+    vacuum is zero, not one.
+  * Without a PML and with real delta_n the equation conserves sum(|psi|**2).
 """
 
 import math
