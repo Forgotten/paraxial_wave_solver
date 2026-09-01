@@ -22,6 +22,8 @@ atmospheric or underwater turbulence.
 - **Beyond the linear paraxial problem.** Optional Kerr nonlinearity, complex
   refractive index for absorption and gain, a wide-angle propagator, 4th-order
   splitting and 2/3-rule dealiasing — all opt-in, with defaults unchanged.
+- **Diagnostics.** Power, centroid, D4-sigma widths, M², Strehl, mode overlap,
+  scintillation and encircled power — computable inside the propagation loop.
 - **Typed and linted.** Type hints throughout; `ruff` clean.
 
 ## Installation
@@ -268,6 +270,46 @@ Set `use_complex_stretching=True` to absorb inside the differential operator
 instead of through a damping potential. This applies to the finite difference
 solvers only; the spectral method falls back to the absorbing potential.
 
+### Diagnostics
+
+`paraxial_wave_solver.src.diagnostics` provides the usual beam measures, all
+pure functions of a field. Moments follow the ISO 11146 definitions: widths are
+D4-sigma, and `m_squared` uses the full space-frequency covariance including the
+position–wavenumber cross term, so it is a propagation invariant rather than
+growing away from the waist.
+
+| Function | Returns |
+|---|---|
+| `total_power`, `peak_intensity` | Scalars |
+| `centroid`, `beam_width`, `m_squared` | `(x, y)` pairs |
+| `second_moments` | `(sigma_xx, sigma_yy, sigma_xy)` |
+| `rms_radius`, `scintillation_index` | Scalars |
+| `strehl_ratio`, `overlap` | Comparison against a reference field |
+| `encircled_power` | Power fraction inside a radius |
+| `ensemble_scintillation_index` | Pointwise index across a stack of runs |
+| `beam_diagnostics` | The common ones, as a dict |
+
+Pass any of them to `solve` as `observable_fn` and they are evaluated inside the
+loop, so the history holds numbers rather than fields:
+
+```python
+def observable(psi, z):
+    return pws.beam_diagnostics(psi, sim_config)
+
+psi_final, history = solver.solve(psi_0, observable_fn=observable)
+history['m2_x']        # shape (nz // save_every,)
+```
+
+`examples/turbulence_diagnostics.py` tracks beam quality through four
+turbulence strengths this way, recording 10 kB of metrics in place of 105 MB of
+fields.
+
+Two caveats worth knowing. `strehl_ratio` is a ratio of peaks, so it can exceed
+1 for a speckled field where a random hot spot beats the unaberrated peak;
+`overlap` is the robust choice for tracking how much of a mode survives. And
+the spatial `scintillation_index` is dominated by dark background unless the
+beam fills the grid — pass a `mask` selecting the illuminated region.
+
 ### Precision
 
 JAX defaults to float32, which caps the achievable accuracy. Switch before
@@ -323,7 +365,8 @@ stepper.
 ### `ParaxialWaveSolver.solve`
 
 ```python
-solve(psi_0, z_0=0.0, medium=None, save_every=1, return_history=True)
+solve(psi_0, z_0=0.0, medium=None, save_every=1, return_history=True,
+      observable_fn=None)
 ```
 
 Returns `(psi_final, psi_history)`. `psi_history` is `None` when
@@ -352,6 +395,7 @@ Run these after `pip install -e .`:
 | `pml_comparison.py` | Absorbing layer versus coordinate stretching |
 | `turbulence_propagation.py` | LG superposition through Von Karman turbulence |
 | `kerr_self_focusing.py` | Self-focusing, dealiasing, and 2nd vs 4th order splitting |
+| `turbulence_diagnostics.py` | Beam quality vs turbulence strength, measured in-loop |
 | `demo.ipynb` | Notebook walkthrough of both solver families |
 
 ```bash
@@ -368,6 +412,7 @@ paraxial_wave_solver/
 │   │   ├── config.py       # Configuration dataclasses and conventions
 │   │   ├── operators.py    # Laplacian operators
 │   │   ├── pml.py          # PML profile generation
+│   │   ├── diagnostics.py  # Beam quality measures
 │   │   ├── solvers.py      # Propagation kernels and the solver
 │   │   └── utils.py        # Analytical beams and random media
 │   └── tests/

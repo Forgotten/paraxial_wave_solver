@@ -383,7 +383,7 @@ def _make_rk4_kernel(
 
 
 @functools.partial(
-  jax.jit, static_argnames=('step_fn', 'return_history')
+  jax.jit, static_argnames=('step_fn', 'return_history', 'observable_fn')
 )
 def _propagate(
   psi_0: Field,
@@ -392,12 +392,14 @@ def _propagate(
   medium: Any,
   step_fn: Callable[[Field, Any, Operators, Any], Field],
   return_history: bool,
-) -> tuple[Field, Field | None]:
+  observable_fn: Callable[[Field, Any], Any] | None = None,
+) -> tuple[Field, Any]:
   """Runs the propagation as a nested scan over blocks of steps.
 
-  The outer scan emits one field per block and the inner scan advances through
-  the block without emitting, so the history array holds one entry per saved
-  plane rather than one per step.
+  The outer scan emits once per block and the inner scan advances through the
+  block without emitting, so the recorded history holds one entry per saved
+  plane rather than one per step. When `observable_fn` is given it is applied
+  inside the loop, so only its (small) output is ever materialized.
 
   Args:
     psi_0: Initial field.
@@ -405,17 +407,25 @@ def _propagate(
     operators: Precomputed z-independent operator arrays.
     medium: Auxiliary data forwarded to the refractive index callable.
     step_fn: Single-step kernel (static).
-    return_history: Whether to accumulate the field history (static).
+    return_history: Whether to accumulate a history (static).
+    observable_fn: Optional (psi, z) -> pytree reduction applied to each saved
+                   plane instead of storing the field (static).
 
   Returns:
-    A tuple (psi_final, psi_history); psi_history is None when
-    return_history is False.
+    A tuple (psi_final, history); history is None when return_history is
+    False, a stack of fields when observable_fn is None, and a stack of the
+    observable's outputs otherwise.
   """
   def advance(psi: Field, z: Any) -> tuple[Field, None]:
     return step_fn(psi, z, operators, medium), None
 
-  def block(psi: Field, z_block: Field) -> tuple[Field, Field | None]:
-    emitted = psi if return_history else None
+  def block(psi: Field, z_block: Field) -> tuple[Field, Any]:
+    if not return_history:
+      emitted = None
+    elif observable_fn is None:
+      emitted = psi
+    else:
+      emitted = observable_fn(psi, z_block[0])
     psi, _ = lax.scan(advance, psi, z_block)
     return psi, emitted
 
@@ -539,7 +549,8 @@ class ParaxialWaveSolver:
     medium: Any = None,
     save_every: int = 1,
     return_history: bool = True,
-  ) -> tuple[Field, Field | None]:
+    observable_fn: Callable[[Field, Any], Any] | None = None,
+  ) -> tuple[Field, Any]:
     """Propagates the initial envelope psi_0 through the medium.
 
     Args:
@@ -554,12 +565,23 @@ class ParaxialWaveSolver:
                       field is returned. For long runs this is the difference
                       between allocating an (nz, nx, ny) complex array and
                       allocating nothing.
+      observable_fn: Optional callable (psi, z) -> pytree, applied to each
+                     saved plane inside the propagation loop. The history then
+                     holds its stacked outputs rather than the fields
+                     themselves, which is how to record diagnostics over a long
+                     run without materializing the field volume. See
+                     `paraxial_wave_solver.src.diagnostics`.
 
     Returns:
-      A tuple (psi_final, psi_history) where psi_final is the field at
-      z_0 + nz * dz, and psi_history has shape (nz // save_every, nx, ny) with
-      psi_history[j] the field at z_0 + j * save_every * dz - so index 0 is
-      psi_0 itself. psi_history is None when return_history is False.
+      A tuple (psi_final, history) where psi_final is the field at
+      z_0 + nz * dz. With no observable_fn, history has shape
+      (nz // save_every, nx, ny) and history[j] is the field at
+      z_0 + j * save_every * dz - so index 0 is psi_0 itself. With an
+      observable_fn, history is that function's output stacked over the same
+      planes. history is None when return_history is False.
+
+      The final plane is not included in the history; apply observable_fn to
+      psi_final directly if its value there is needed.
 
     Raises:
       ValueError: If save_every is not a positive divisor of nz.
@@ -584,6 +606,7 @@ class ParaxialWaveSolver:
       medium,
       step_fn=self._step_fn,
       return_history=return_history,
+      observable_fn=observable_fn,
     )
 
 
@@ -597,7 +620,8 @@ def propagate(
   medium: Any = None,
   save_every: int = 1,
   return_history: bool = True,
-) -> tuple[Field, Field | None]:
+  observable_fn: Callable[[Field, Any], Any] | None = None,
+) -> tuple[Field, Any]:
   """Builds a solver and propagates psi_0 in one call.
 
   Convenient for one-off runs. Prefer constructing a `ParaxialWaveSolver` when
@@ -613,6 +637,7 @@ def propagate(
     medium: Auxiliary data forwarded to delta_n_fn.
     save_every: Store the field every `save_every` steps.
     return_history: Whether to accumulate the field history.
+    observable_fn: Optional in-loop reduction; see `ParaxialWaveSolver.solve`.
 
   Returns:
     A tuple (psi_final, psi_history); see `ParaxialWaveSolver.solve`.
@@ -622,5 +647,5 @@ def propagate(
   )
   return solver.solve(
     psi_0, z_0, medium=medium, save_every=save_every,
-    return_history=return_history,
+    return_history=return_history, observable_fn=observable_fn,
   )

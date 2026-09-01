@@ -3,6 +3,21 @@
 import jax
 
 from .config import Field, PMLConfig, SimulationConfig, SolverConfig
+from .diagnostics import (
+  beam_diagnostics,
+  beam_width,
+  centroid,
+  encircled_power,
+  ensemble_scintillation_index,
+  m_squared,
+  overlap,
+  peak_intensity,
+  rms_radius,
+  scintillation_index,
+  second_moments,
+  strehl_ratio,
+  total_power,
+)
 from .pml import PMLData, StretchFields, generate_pml_profile
 from .solvers import ParaxialWaveSolver, propagate
 from .utils import (
@@ -41,6 +56,19 @@ __all__ = [
   "propagate",
   "generate_pml_profile",
   "enable_x64",
+  "beam_diagnostics",
+  "beam_width",
+  "centroid",
+  "encircled_power",
+  "ensemble_scintillation_index",
+  "m_squared",
+  "overlap",
+  "peak_intensity",
+  "rms_radius",
+  "scintillation_index",
+  "second_moments",
+  "strehl_ratio",
+  "total_power",
   "gaussian_beam",
   "laguerre_gaussian_beam",
   "hermite_gaussian_beam",
