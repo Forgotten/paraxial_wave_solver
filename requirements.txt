@@ -1,5 +1,5 @@
-jax
-jaxlib
+jax>=0.4.30
+jaxlib>=0.4.30
 numpy
-matplotlib
 scipy
+matplotlib
