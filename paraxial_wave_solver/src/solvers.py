@@ -500,6 +500,18 @@ def _propagate(
   return psi_final, emitted
 
 
+# Donation is set when the function is traced, not when it is called, so the
+# donating variant has to be a separate jitted object. Only psi_0 is donated:
+# XLA can reuse an input buffer only when some output has the same shape and
+# dtype, and psi_final is the only output shaped like an input. The medium has
+# no matching output, so donating it is silently refused.
+_propagate_donating = functools.partial(
+  jax.jit,
+  static_argnames=('step_fn', 'return_history', 'observable_fn', 'checkpoint'),
+  donate_argnums=(0,),
+)(_propagate.__wrapped__)
+
+
 class ParaxialWaveSolver:
   """Solver for the paraxial wave equation.
 
@@ -656,6 +668,7 @@ class ParaxialWaveSolver:
     observable_fn: Callable[[Field, Any], Any] | None = None,
     checkpoint: bool = True,
     operators: Operators | None = None,
+    donate_psi_0: bool = False,
   ) -> tuple[Field, Any]:
     """Propagates the initial envelope psi_0 through the medium.
 
@@ -690,6 +703,14 @@ class ParaxialWaveSolver:
                  from traced parameters is how gradients are taken with
                  respect to physical constants such as n0 or the wavelength,
                  which are otherwise fixed when the solver is constructed.
+      donate_psi_0: Hand the input buffer to XLA to reuse for the output.
+                    **This destroys psi_0**: after the call it is deleted and
+                    reading it raises. Off by default for that reason, and
+                    worth only one field - roughly 2 MB on a 512x512 complex64
+                    grid. It is not a way to reclaim the medium, which has no
+                    output of matching shape and so cannot be donated at all.
+                    Reach for `checkpoint` or `phase_screen` first; both save
+                    orders of magnitude more.
 
     Returns:
       A tuple (psi_final, history) where psi_final is the field at
@@ -724,7 +745,8 @@ class ParaxialWaveSolver:
     group = checkpoint_group_size(nz, save_every) if checkpoint else nz
     z_grid = zs.reshape(nz // group, group // save_every, save_every)
 
-    return _propagate(
+    propagate_fn = _propagate_donating if donate_psi_0 else _propagate
+    return propagate_fn(
       psi_0,
       z_grid,
       self._operators if operators is None else operators,

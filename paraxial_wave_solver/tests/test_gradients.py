@@ -19,6 +19,7 @@ error in the adjoint is an O(1) discrepancy, not an O(1e-4) one.
 """
 
 import math
+import warnings
 
 import jax
 import jax.numpy as jnp
@@ -511,3 +512,63 @@ def test_build_operators_matches_rebuilding_the_whole_solver(x64):
   numeric = _directional_finite_difference(via_fresh_solver, 1.0, 1.0, 1e-6)
   assert jnp.allclose(a, b, rtol=1e-10)
   assert jnp.allclose(a, numeric, rtol=FD_RTOL)
+
+
+# --------------------------------------------------------------------------
+# Buffer donation
+# --------------------------------------------------------------------------
+
+def test_donation_is_accepted_and_gives_the_same_answer():
+  """Donation must actually happen, and must not change the result.
+
+  XLA refuses a donation whose buffer has no matching output and only warns
+  about it, so a signature change could silently turn this into a no-op while
+  every other test still passed. Asserting on the absence of that warning is
+  what catches it.
+  """
+  sim_config = _grid(nx=64, nz=20)
+  solver = ParaxialWaveSolver(sim_config, SPLIT, NO_PML)
+  psi_0 = _beam(sim_config)
+
+  reference, _ = solver.solve(psi_0, return_history=False)
+
+  donated_input = psi_0.copy()
+  with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    result, _ = solver.solve(
+      donated_input, return_history=False, donate_psi_0=True
+    )
+    result.block_until_ready()
+    refused = [
+      w for w in caught if "donated buffers were not usable" in str(w.message)
+    ]
+
+  assert not refused, "XLA refused the donation"
+  assert jnp.allclose(result, reference)
+
+
+def test_donation_destroys_the_input():
+  """The hazard, asserted rather than only documented."""
+  sim_config = _grid(nx=32, nz=10)
+  solver = ParaxialWaveSolver(sim_config, SPLIT, NO_PML)
+  psi_0 = _beam(sim_config)
+
+  result, _ = solver.solve(psi_0, return_history=False, donate_psi_0=True)
+  result.block_until_ready()
+
+  assert psi_0.is_deleted()
+  with pytest.raises(RuntimeError):
+    jnp.sum(psi_0)
+
+
+def test_donation_is_off_by_default():
+  """The default must leave the caller's array intact."""
+  sim_config = _grid(nx=32, nz=10)
+  solver = ParaxialWaveSolver(sim_config, SPLIT, NO_PML)
+  psi_0 = _beam(sim_config)
+
+  result, _ = solver.solve(psi_0, return_history=False)
+  result.block_until_ready()
+
+  assert not psi_0.is_deleted()
+  assert jnp.isfinite(jnp.sum(jnp.abs(psi_0)))

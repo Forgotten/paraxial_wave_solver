@@ -563,6 +563,22 @@ constant factor of about seven, but the scan still stores the state entering
 every step, so the growth stays linear. The grouping is what buys the change
 in scaling.
 
+### Buffer donation
+
+`solve(..., donate_psi_0=True)` lets XLA reuse the input buffer for the output.
+It is off by default because **it destroys `psi_0`**: after the call the array
+is deleted and reading it raises. That matters in practice, since the input
+beam is usually also wanted for plotting or as the reference in an `overlap`.
+
+Set expectations accordingly — this reclaims one field, about 2 MB on a
+512×512 complex64 grid. It is not a route to reclaiming the medium: XLA can
+only reuse an input buffer when some output has the same shape and dtype, and
+`solve` returns a field, so a `(nx, ny, nz)` volume has nothing to be reused
+for. Donating it is refused with a warning and silently does nothing.
+
+For memory, reach for `checkpoint` and `phase_screen` first; both save orders
+of magnitude more than this does.
+
 ### Precision
 
 JAX defaults to float32, which caps the achievable accuracy. Switch before
@@ -619,7 +635,8 @@ stepper.
 
 ```python
 solve(psi_0, z_0=0.0, medium=None, save_every=1, return_history=True,
-      observable_fn=None, checkpoint=True, operators=None)
+      observable_fn=None, checkpoint=True, operators=None,
+      donate_psi_0=False)
 ```
 
 Returns `(psi_final, psi_history)`. `psi_history` is `None` when
