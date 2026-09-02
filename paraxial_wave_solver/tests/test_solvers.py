@@ -321,8 +321,16 @@ def test_complex_stretching_runs_and_absorbs():
 # History control
 # --------------------------------------------------------------------------
 
-def test_history_indexing_and_save_every():
-  """history[j] is the field at z_0 + j * save_every * dz, starting at psi_0."""
+def test_history_indexing_and_save_every(x64):
+  """history[j] is the field at z_0 + j * save_every * dz, starting at psi_0.
+
+  Run in float64 deliberately. save_every=5 groups the scan into blocks of
+  five while save_every=1 does not, so XLA fuses the two differently and they
+  round differently in float32 - by around 1e-7 here, enough to fail against
+  a tight tolerance on some jax versions and pass on others. The claim under
+  test is about indexing, not about float32 accuracy, so the comparison is
+  made where rounding cannot confound it.
+  """
   sim_config = SimulationConfig(
     nx=32, ny=32, dx=0.2, dy=0.2, dz=0.05, nz=20, wavelength=1.0
   )
@@ -339,7 +347,7 @@ def test_history_indexing_and_save_every():
   assert strided.shape == (4, 32, 32)
   assert jnp.allclose(psi_strided, psi_final)
   # Strided entries must coincide with every fifth full-history entry.
-  assert jnp.allclose(strided, history[::5], atol=1e-6)
+  assert jnp.allclose(strided, history[::5], atol=1e-12)
 
   psi_none, none_history = solver.solve(psi_0, return_history=False)
   assert none_history is None

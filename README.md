@@ -1,5 +1,6 @@
 # Paraxial Wave Solver
 
+[![CI](https://github.com/Forgotten/paraxial_wave_solver/actions/workflows/ci.yml/badge.svg)](https://github.com/Forgotten/paraxial_wave_solver/actions/workflows/ci.yml)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Forgotten/paraxial_wave_solver/blob/main/examples/demo.ipynb)
 
 A JAX-based numerical solver for the paraxial wave equation in 3D, with examples
@@ -706,11 +707,26 @@ paraxial_wave_solver/
 pytest
 ```
 
+The suite is order-independent, so it can be parallelised — this is what CI
+runs:
+
+```bash
+pytest -n auto
+```
+
 Linting is configured in `pyproject.toml`:
 
 ```bash
 ruff check .
 ```
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs `ruff` and then the suite on Python 3.10
+through 3.13. The matrix is deliberately wide: the dependency pins have no
+upper bound, so each interpreter resolves to a different JAX — 3.10 gets
+0.6.2 while 3.12 and 3.13 get 0.11.1 — and the workflow logs `pip list` so
+which one was used is always visible.
 
 ## License
 

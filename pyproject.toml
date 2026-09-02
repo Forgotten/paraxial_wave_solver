@@ -23,6 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-xdist",   # the CI workflow runs the suite with -n auto
     "ruff",
 ]
 

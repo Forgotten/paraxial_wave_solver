@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly. JAX moves fast and the dependency pins have no upper bound, so
+    # this catches breakage that arrives from upstream rather than from a
+    # change here.
+    - cron: "0 6 * * 1"
+
+# A second push to the same branch supersedes the first.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    # Seconds, and it gates the matrix below so a formatting slip does not
+    # cost four test runs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Pinned deliberately: an unpinned linter fails on its own release
+      # schedule rather than on your changes.
+      - run: pip install ruff==0.16.5
+      - run: ruff check .
+
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      # One version failing must not hide the others. On the first run that
+      # is the entire point: the 3.10 leg is a live question.
+      fail-fast: false
+      matrix:
+        # 3.10 and 3.11 are the ones worth watching. pyproject declares
+        # requires-python >=3.10, but the dependency pins have no upper bound,
+        # so each interpreter resolves to a different JAX: 3.10 gets 0.6.2,
+        # 3.11 gets 0.10.2, and 3.12/3.13 get 0.11.1. The suite has been run
+        # locally against jax 0.6.2 and passes, so what remains untested here
+        # is the interpreter itself rather than the library API.
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      # pyproject declares requires-python >=3.10, but the jax pin has no
+      # upper bound, so each interpreter silently resolves to a different
+      # jax. This log is how we find out which.
+      - name: Record the resolved dependency versions
+        run: pip list
+
+      - name: Test
+        run: pytest -q -n auto --durations=10
+        env:
+          # No accelerator on a runner. Say so, rather than letting JAX
+          # discover it and warn on every test.
+          JAX_PLATFORMS: cpu
