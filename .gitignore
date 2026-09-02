@@ -29,3 +29,7 @@ pip-delete-this-directory.txt
 
 # Python package
 *.egg-info/
+
+# Coverage
+.coverage
+htmlcov/
