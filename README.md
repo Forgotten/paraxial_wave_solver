@@ -73,25 +73,25 @@ are easy to get wrong and neither is guessable from the API.
 Start from the scalar Helmholtz equation for a monochromatic field $E$, with
 $k_0 = 2\pi/\lambda$ the vacuum wavenumber and $n(x,y,z)$ the refractive index:
 
-$$
+```math
 \nabla^2 E + k_0^2\, n^2(x,y,z)\, E = 0
-$$
+```
 
 Factor out the fast carrier along the propagation axis,
 
-$$
+```math
 E(x,y,z) = \psi(x,y,z)\, e^{i k z}, \qquad k = k_0 n_0
-$$
+```
 
 Substituting and cancelling the carrier gives an equation that is **still
 exact**:
 
-$$
+```math
 \frac{\partial^2 \psi}{\partial z^2}
   + 2 i k \frac{\partial \psi}{\partial z}
   + \nabla_\perp^2 \psi
   + k_0^2 \left( n^2 - n_0^2 \right) \psi = 0
-$$
+```
 
 Two approximations turn this into what the solver integrates.
 
@@ -99,10 +99,10 @@ Two approximations turn this into what the solver integrates.
 $z$-derivative, on the grounds that the envelope changes little over a
 wavelength:
 
-$$
+```math
 \left| \frac{\partial^2 \psi}{\partial z^2} \right|
   \ll \left| 2 k \frac{\partial \psi}{\partial z} \right|
-$$
+```
 
 This is the step that makes the problem an initial-value problem in $z$: one
 first-order equation marching forward, rather than a boundary-value problem.
@@ -112,47 +112,47 @@ from index structure.
 **2. Weak index contrast.** Writing $n = n_0 + \delta n$ with
 $\delta n \ll n_0$,
 
-$$
+```math
 n^2 - n_0^2 = 2 n_0\, \delta n + \delta n^2 \;\approx\; 2 n_0\, \delta n
-$$
+```
 
 What remains, solved for the $z$-derivative, is the equation this package
 integrates:
 
-$$
+```math
 \boxed{\;\frac{\partial \psi}{\partial z}
   = \frac{i}{2 k_0 n_0} \nabla_\perp^2 \psi
   + i k_0\, \delta n\, \psi \;}
-$$
+```
 
 ### The full equation, with every optional term
 
-$$
+```math
 \frac{\partial \psi}{\partial z}
   = \underbrace{\frac{i}{2 k_0 n_0} \mathcal{L}_\perp \psi}_{\text{diffraction}}
   + \underbrace{i k_0 \left( \delta n(x,y,z) + n_2 \lvert \psi \rvert^2 \right) \psi}_{\text{refraction and Kerr}}
   - \underbrace{\sigma(x,y)\, \psi}_{\text{PML}}
-$$
+```
 
 | Term | Meaning | Controlled by |
 |---|---|---|
 | $\frac{i}{2 k_0 n_0} \mathcal{L}_\perp \psi$ | Diffraction | `method`, `fd_order`, `propagator` |
-| $i k_0\, \delta n\, \psi$ | Refraction; complex $\delta n$ gives absorption or gain | `delta_n_fn` |
+| $i k_0\thinspace \delta n\thinspace \psi$ | Refraction; complex $\delta n$ gives absorption or gain | `delta_n_fn` |
 | $i k_0 n_2 \lvert \psi \rvert^2 \psi$ | Kerr self-phase modulation | `n2` |
-| $-\sigma\, \psi$ | PML absorption, non-physical, zero in the interior | `PMLConfig` |
+| $-\sigma\thinspace \psi$ | PML absorption, non-physical, zero in the interior | `PMLConfig` |
 
 $\mathcal{L}_\perp$ is the transverse Laplacian
 $\partial^2/\partial x^2 + \partial^2/\partial y^2$, discretized by the chosen
 `method`. Under complex coordinate stretching it becomes
 
-$$
+```math
 \mathcal{L}_\perp
   = \frac{1}{s_x} \frac{\partial}{\partial x}
     \left( \frac{1}{s_x} \frac{\partial}{\partial x} \right)
   + \frac{1}{s_y} \frac{\partial}{\partial y}
     \left( \frac{1}{s_y} \frac{\partial}{\partial y} \right),
   \qquad s = 1 + i\sigma
-$$
+```
 
 which is where the absorption lives in that mode, and why $\sigma$ is then not
 also applied as a potential.
@@ -167,24 +167,24 @@ power $\sum \lvert \psi \rvert^2$ is invariant. That is what
 second $z$-derivative, it factors Helmholtz into forward- and
 backward-travelling parts and keeps the forward one:
 
-$$
+```math
 \frac{\partial \psi}{\partial z}
   = i \left( \sqrt{k^2 + \nabla_\perp^2} - k \right) \psi
-$$
+```
 
 The square root of an operator is awkward in general, which is why the
 literature reaches for Padé approximants. In Fourier space it is diagonal, so
 no approximation is needed:
 
-$$
+```math
 \widehat{D}_{\text{paraxial}}(h) = \exp\left( -\frac{i h k_\perp^2}{2k} \right),
   \qquad
   \widehat{D}_{\text{wide}}(h) = \exp\left( i h \left( \sqrt{k^2 - k_\perp^2} - k \right) \right)
-$$
+```
 
 Expanding the root for $k_\perp \ll k$ gives $-k_\perp^2 / 2k$, so the paraxial
 operator is the leading term of the wide-angle one. Past the light line
-($k_\perp > k$) the root turns imaginary and the multiplier decays, which is
+($k_\perp \gt k$) the root turns imaginary and the multiplier decays, which is
 the correct treatment of evanescent components.
 
 ### What the steppers do with it
@@ -193,17 +193,17 @@ the correct treatment of evanescent components.
 in its own domain — diffraction as a multiplier in Fourier space, everything
 else pointwise in real space. One Strang step is
 
-$$
+```math
 \psi(z + \Delta z) = \mathcal{N}\!\left( \tfrac{\Delta z}{2} \right)
   \, \mathcal{D}(\Delta z) \,
   \mathcal{N}\!\left( \tfrac{\Delta z}{2} \right) \psi(z)
-$$
+```
 
 where $\mathcal{D}$ applies $\widehat{D}$ above and
 
-$$
+```math
 \mathcal{N}(h) = \exp\left[ i k_0 \left( \delta n + n_2 \lvert \psi \rvert^2 \right) h \right]
-$$
+```
 
 with the PML applied as $e^{-\sigma \Delta z / 2}$ at each end of the full
 step. `splitting_order=4` composes three such steps with Yoshida weights
