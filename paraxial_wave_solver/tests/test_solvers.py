@@ -474,8 +474,8 @@ def test_compact_does_not_bypass_order_validation():
   """compact=True used to skip fd_order validation entirely."""
   # compact ignores fd_order, so an unusual value is accepted deliberately...
   SolverConfig(method='finite_difference', fd_order=99, compact=True)
-  # ...but the non-compact path must still reject it.
-  with pytest.raises(ValueError):
+  # ...but the non-compact path must still reject it, and for that reason.
+  with pytest.raises(ValueError, match="Unsupported fd_order"):
     SolverConfig(method='finite_difference', fd_order=99, compact=False)
 
 
@@ -484,14 +484,26 @@ def test_compact_does_not_bypass_order_validation():
   dict(wavelength=0.0), dict(n0=-1.0),
 ])
 def test_simulation_config_rejects_nonphysical(kwargs):
+  """Each field is rejected for its own reason, not merely rejected.
+
+  A bare `raises(ValueError)` would pass if nx=0 were reported as a problem
+  with dx, so the message has to name the offending field.
+  """
   base = dict(nx=8, ny=8, dx=0.1, dy=0.1, dz=0.1, nz=4, wavelength=1.0)
-  with pytest.raises(ValueError):
+  field = next(iter(kwargs))
+  with pytest.raises(ValueError, match=field):
     SimulationConfig(**{**base, **kwargs})
 
 
 def test_pml_config_rejects_negative_width():
-  with pytest.raises(ValueError):
+  with pytest.raises(ValueError, match="width_x"):
     PMLConfig(width_x=-1, width_y=0)
+  with pytest.raises(ValueError, match="width_y"):
+    PMLConfig(width_x=0, width_y=-1)
+  with pytest.raises(ValueError, match="strength"):
+    PMLConfig(width_x=4, width_y=4, strength=-1.0)
+  with pytest.raises(ValueError, match="order"):
+    PMLConfig(width_x=4, width_y=4, order=-1)
 
 
 def test_pml_wider_than_domain_rejected():
@@ -607,3 +619,38 @@ def test_solver_integrates_the_documented_equation(
   )
   error = jnp.linalg.norm(measured - expected) / jnp.linalg.norm(expected)
   assert float(error) < 1e-6, f"rel error {error}"
+
+
+# --------------------------------------------------------------------------
+# PML profile shape
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("order", [1, 2, 3])
+def test_pml_profile_follows_its_polynomial_order(order):
+  """sigma is strength * (d / L)**order inside the layer, zero outside.
+
+  Nothing else pins the profile's shape: the reflection and dissipation tests
+  only require that it absorbs, which a wrong exponent still does.
+  """
+  from paraxial_wave_solver.src.pml import generate_pml_profile
+
+  sim_config = SimulationConfig(
+    nx=40, ny=40, dx=0.1, dy=0.1, dz=0.1, nz=4, wavelength=1.0
+  )
+  width, strength = 10, 3.0
+  data = generate_pml_profile(
+    sim_config,
+    PMLConfig(width_x=width, width_y=0, strength=strength, order=order),
+  )
+
+  x = jnp.arange(sim_config.nx) * sim_config.dx
+  layer = width * sim_config.dx
+  start, end = layer, sim_config.lx - layer
+  depth = jnp.maximum(jnp.maximum(0.0, start - x), jnp.maximum(0.0, x - end))
+  expected = strength * (depth / layer)**order
+
+  # width_y = 0, so the y profile contributes nothing to the sum.
+  assert jnp.allclose(data.sigma[:, 0], expected, atol=1e-6)
+  # And the interior is genuinely untouched.
+  interior = (x >= start) & (x <= end)
+  assert float(jnp.max(jnp.abs(data.sigma[interior, 0]))) == 0.0

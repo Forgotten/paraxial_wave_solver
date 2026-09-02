@@ -42,22 +42,27 @@ def test_random_medium_is_reproducible():
   assert not jnp.allclose(first, other)
 
 
-@pytest.mark.parametrize("correlation_length", [0.3, 1.0])
+@pytest.mark.parametrize("correlation_length", [0.3, 0.4, 0.6])
 def test_random_medium_correlation_length(correlation_length, x64):
-  """A longer correlation length gives a smoother field.
+  """The medium's correlation really is the requested length.
 
-  Measured through the lag-one autocorrelation along x, which increases
-  towards 1 as the correlation length grows relative to the grid spacing.
+  Measured at a lag of one correlation length, where the autocorrelation of a
+  Gaussian-correlated field is exp(-1) and the measurement is most sensitive.
+  A lag-one check is a far weaker instrument: at dx << L the correlation is
+  ~1 whatever the length is, so halving L moves it by less than the tolerance
+  and the error goes unnoticed.
   """
   sim_config = _config(nx=64, ny=64, nz=64)
   delta_n = random_medium(
     sim_config, correlation_length=correlation_length, strength=1.0,
     key=jax.random.PRNGKey(3),
   )
-  shifted = jnp.roll(delta_n, 1, axis=0)
-  lag_one = float(jnp.mean(delta_n * shifted) / jnp.mean(delta_n**2))
-  expected = float(jnp.exp(-sim_config.dx**2 / correlation_length**2))
-  assert lag_one == pytest.approx(expected, abs=0.05)
+  lag = int(round(correlation_length / sim_config.dx))
+  shifted = jnp.roll(delta_n, lag, axis=0)
+  measured = float(jnp.mean(delta_n * shifted) / jnp.mean(delta_n**2))
+  assert measured == pytest.approx(float(jnp.exp(-1.0)), abs=0.06), (
+    f"correlation at lag = L is {measured:.4f}, expected {jnp.exp(-1.0):.4f}"
+  )
 
 
 def test_random_medium_spectral_shape_and_realness():

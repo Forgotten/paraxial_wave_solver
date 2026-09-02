@@ -295,3 +295,24 @@ def test_hg_propagation_matches_solver(x64):
   rel_err = (jnp.linalg.norm(psi_final - psi_analytical)
              / jnp.linalg.norm(psi_analytical))
   assert rel_err < 1e-3
+
+
+@pytest.mark.parametrize("kx0,ky0", [(0.5, 0.0), (0.0, -0.8), (0.3, 0.4)])
+def test_gaussian_beam_tilt_applies_a_linear_phase(kx0, ky0, x64):
+  """kx0/ky0 add exp(1j*(kx0*x + ky0*y)) and leave the amplitude alone.
+
+  The tilt arguments were reachable but untested; nothing else in the suite
+  called gaussian_beam with a non-zero transverse wavenumber.
+  """
+  sim_config = SimulationConfig(
+    nx=64, ny=64, dx=0.1, dy=0.1, dz=0.1, nz=4, wavelength=1.0
+  )
+  straight = gaussian_beam(sim_config, w0=1.5)
+  tilted = gaussian_beam(sim_config, w0=1.5, kx0=kx0, ky0=ky0)
+
+  assert jnp.allclose(jnp.abs(straight), jnp.abs(tilted), atol=1e-12)
+
+  x = jnp.arange(sim_config.nx) * sim_config.dx
+  y = jnp.arange(sim_config.ny) * sim_config.dy
+  expected = jnp.exp(1j * (kx0 * x[:, None] + ky0 * y[None, :]))
+  assert jnp.allclose(tilted, straight * expected, atol=1e-10)

@@ -253,3 +253,30 @@ def test_diagnostics_are_jittable_and_vmappable(x64):
   )(fields)
   assert widths.shape == (3,)
   assert bool(jnp.all(jnp.diff(widths) > 0))
+
+
+def test_scintillation_index_mask_restricts_the_average(x64):
+  """The masked branch measures the beam, not the dark background around it.
+
+  Without a mask the index is dominated by empty grid: <I> collapses towards
+  zero while <I^2> is still set by the bright core, so a clean beam reads a
+  large value. The mask is the whole reason the argument exists, and it was
+  otherwise unexercised by any test.
+  """
+  grid = SimulationConfig(
+    nx=128, ny=128, dx=0.05, dy=0.05, dz=0.1, nz=4, wavelength=1.0
+  )
+  psi = gaussian_beam(grid, w0=1.0)          # fills a small part of the grid
+  illuminated = jnp.abs(psi)**2 > 0.01 * jnp.max(jnp.abs(psi)**2)
+
+  whole_grid = float(diagnostics.scintillation_index(psi))
+  masked = float(diagnostics.scintillation_index(psi, mask=illuminated))
+
+  assert whole_grid > 5 * masked, (
+    f"masking should cut the background contribution: {whole_grid} vs {masked}"
+  )
+  # A mask covering everything must reproduce the unmasked value.
+  everywhere = jnp.ones_like(illuminated)
+  assert diagnostics.scintillation_index(psi, mask=everywhere) == pytest.approx(
+    whole_grid, rel=1e-9
+  )

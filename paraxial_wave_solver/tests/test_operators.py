@@ -104,5 +104,42 @@ def test_9point_rejects_stretching():
   field = jnp.zeros((8, 8))
   params = {'sx': jnp.ones((8, 1)), 'sy': jnp.ones((1, 8)),
             'sx_prime': jnp.zeros((8, 1)), 'sy_prime': jnp.zeros((1, 8))}
-  with pytest.raises(NotImplementedError):
+  with pytest.raises(NotImplementedError, match="coordinate stretching"):
     laplacian_fd_9point(field, 0.1, 0.1, params)
+
+
+def test_9point_stencil_is_more_isotropic_than_the_5_point(x64):
+  """The compact stencil's whole purpose: a direction-independent error.
+
+  Both stencils are 2nd order, so a convergence-rate test cannot tell them
+  apart, and a loose end-to-end accuracy check does not either. What the
+  cross term buys is isotropy, and that is what this measures: the symbol
+  error at fixed |k| should barely vary with direction.
+
+  Integer mode numbers make each plane wave exactly periodic on the grid, so
+  lap(f)/f is the exact symbol with no wraparound contamination, and the
+  Pythagorean set below gives four directions at identical |k|.
+  """
+  n, h = 60, 0.2
+  length = n * h
+  x = jnp.arange(n) * h
+  modes = [(5, 0), (4, 3), (3, 4), (0, 5)]      # |m| = 5 for every pair
+
+  def symbol_spread(operator):
+    errors = []
+    for mx, my in modes:
+      kx = 2 * jnp.pi * mx / length
+      ky = 2 * jnp.pi * my / length
+      wave = jnp.exp(1j * (kx * x[:, None] + ky * x[None, :]))
+      symbol = (operator(wave, h, h) / wave)[0, 0].real
+      k_squared = float(kx**2 + ky**2)
+      errors.append(abs(float(symbol) + k_squared) / k_squared)
+    return max(errors) - min(errors)
+
+  five_point = symbol_spread(lambda f, a, b: laplacian_fd(f, a, b, 2))
+  nine_point = symbol_spread(laplacian_fd_9point)
+
+  assert nine_point < five_point / 5, (
+    f"9-point spread {nine_point:.2e} is not decisively below the 5-point "
+    f"spread {five_point:.2e}; the cross term is not doing its job"
+  )
