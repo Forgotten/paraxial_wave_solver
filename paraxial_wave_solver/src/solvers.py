@@ -65,6 +65,10 @@ DeltaNFn = Callable[[Any, Any], Any]
 # leaves are traced as ordinary arguments rather than baked in as constants.
 Operators = dict[str, Any]
 
+# Physical constants that `build_operators` will accept as traced overrides,
+# making them differentiable despite living on a frozen config.
+OPERATOR_PARAMS = ('k0', 'n0', 'dz')
+
 
 # Peak magnitude of the 1D discrete second-derivative symbol, in units of
 # 1/h**2, reached at the grid Nyquist wavenumber.
@@ -204,10 +208,10 @@ def _dealias_mask(sim_config: SimulationConfig) -> Field:
 
 
 def _diffraction_operator(
-  sim_config: SimulationConfig,
   kx: Field,
   ky: Field,
   step: float,
+  k: float,
   propagator: str,
   mask: Field | None,
 ) -> Field:
@@ -221,17 +225,16 @@ def _diffraction_operator(
   is the correct treatment of evanescent components.
 
   Args:
-    sim_config: Simulation configuration.
     kx: Transverse wavenumber grid in x.
     ky: Transverse wavenumber grid in y.
     step: Propagation distance for this sub-step; may be negative.
+    k: Wavenumber in the background medium, k0 * n0. May be traced.
     propagator: 'paraxial' or 'wide_angle'.
     mask: Optional dealiasing mask folded into the multiplier.
 
   Returns:
     A complex (nx, ny) array.
   """
-  k = sim_config.k0 * sim_config.n0
   k_perp_squared = kx**2 + ky**2
 
   if propagator == 'wide_angle':
@@ -563,49 +566,85 @@ class ParaxialWaveSolver:
     )
 
     self.pml_profile = pml_data.sigma
-    operators: Operators = {}
+    self._pml_data = pml_data
+    self._has_pml = has_pml
+    self._use_stretch = use_stretch
 
+    if solver_config.stepper == 'split_step':
+      self._step_fn = _make_split_step_kernel(
+        sim_config, delta_n_fn, has_pml,
+        splitting_weights(solver_config.splitting_order),
+      )
+    else:
+      laplacian_fn = _make_laplacian_fn(
+        solver_config, sim_config, use_stretch
+      )
+      self._step_fn = _make_rk4_kernel(
+        sim_config, laplacian_fn, delta_n_fn,
+        has_pml and not use_stretch,
+      )
+
+    self._operators = self.build_operators()
+
+  def build_operators(self, params: dict[str, Any] | None = None) -> Operators:
+    """Builds the z-independent operator arrays.
+
+    The result is passed to the propagation kernels as a traced argument, so
+    gradients flow to it. Values supplied in `params` override the
+    corresponding configuration fields and, being traced, carry gradients of
+    their own - which is how physical constants become differentiable despite
+    living on frozen configs.
+
+    Args:
+      params: Optional overrides. Recognized keys are 'k0', 'n0' and 'dz'.
+        Anything omitted is taken from the configuration.
+
+    Returns:
+      The operator pytree expected by `solve(..., operators=...)`.
+
+    Raises:
+      ValueError: If `params` contains an unrecognized key.
+    """
+    sim_config = self.sim_config
+    solver_config = self.solver_config
+    params = dict(params or {})
+    unknown = set(params) - set(OPERATOR_PARAMS)
+    if unknown:
+      raise ValueError(
+        f"Unrecognized operator parameters {sorted(unknown)}; expected a "
+        f"subset of {sorted(OPERATOR_PARAMS)}."
+      )
+    k0 = params.get('k0', sim_config.k0)
+    n0 = params.get('n0', sim_config.n0)
+    dz = params.get('dz', sim_config.dz)
+
+    operators: Operators = {}
     if solver_config.stepper == 'split_step':
       kx, ky = get_spectral_k_grids(
         sim_config.nx, sim_config.ny, sim_config.dx, sim_config.dy
       )
-      mask = (
-        _dealias_mask(sim_config) if solver_config.dealias else None
-      )
+      mask = _dealias_mask(sim_config) if solver_config.dealias else None
       # Precomputed once: the diffraction operators do not depend on z. One
       # per sub-step of the splitting composition.
       weights = splitting_weights(solver_config.splitting_order)
       operators['linear'] = [
         _diffraction_operator(
-          sim_config, kx, ky, fraction * sim_config.dz,
-          solver_config.propagator, mask,
+          kx, ky, fraction * dz, k0 * n0, solver_config.propagator, mask,
         )
         for fraction in weights
       ]
-      if has_pml:
-        operators['pml_half'] = jnp.exp(-pml_data.sigma * (sim_config.dz / 2))
-      self._step_fn = _make_split_step_kernel(
-        sim_config, delta_n_fn, has_pml, weights
-      )
+      if self._has_pml:
+        operators['pml_half'] = jnp.exp(-self._pml_data.sigma * (dz / 2))
     else:
       if solver_config.method == 'spectral':
-        kx, ky = get_spectral_k_grids(
+        operators['kx'], operators['ky'] = get_spectral_k_grids(
           sim_config.nx, sim_config.ny, sim_config.dx, sim_config.dy
         )
-        operators['kx'], operators['ky'] = kx, ky
-      if use_stretch:
-        operators['stretch'] = pml_data.stretch.as_dict()
-      apply_sigma = has_pml and not use_stretch
-      if apply_sigma:
-        operators['sigma'] = pml_data.sigma
-      laplacian_fn = _make_laplacian_fn(
-        solver_config, sim_config, use_stretch
-      )
-      self._step_fn = _make_rk4_kernel(
-        sim_config, laplacian_fn, delta_n_fn, apply_sigma
-      )
-
-    self._operators = operators
+      if self._use_stretch:
+        operators['stretch'] = self._pml_data.stretch.as_dict()
+      if self._has_pml and not self._use_stretch:
+        operators['sigma'] = self._pml_data.sigma
+    return operators
 
   def solve(
     self,
@@ -616,6 +655,7 @@ class ParaxialWaveSolver:
     return_history: bool = True,
     observable_fn: Callable[[Field, Any], Any] | None = None,
     checkpoint: bool = True,
+    operators: Operators | None = None,
   ) -> tuple[Field, Any]:
     """Propagates the initial envelope psi_0 through the medium.
 
@@ -645,6 +685,11 @@ class ParaxialWaveSolver:
                   forward pass through each group, and nothing at all when no
                   gradient is taken, which is why it defaults to on. Turn it
                   off only to benchmark against it.
+      operators: Optional replacement for the precomputed operator arrays,
+                 as returned by `build_operators`. Supplying operators built
+                 from traced parameters is how gradients are taken with
+                 respect to physical constants such as n0 or the wavelength,
+                 which are otherwise fixed when the solver is constructed.
 
     Returns:
       A tuple (psi_final, history) where psi_final is the field at
@@ -682,7 +727,7 @@ class ParaxialWaveSolver:
     return _propagate(
       psi_0,
       z_grid,
-      self._operators,
+      self._operators if operators is None else operators,
       medium,
       step_fn=self._step_fn,
       return_history=return_history,

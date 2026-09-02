@@ -24,6 +24,8 @@ atmospheric or underwater turbulence.
   splitting and 2/3-rule dealiasing — all opt-in, with defaults unchanged.
 - **Diagnostics.** Power, centroid, D4-sigma widths, M², Strehl, mode overlap,
   scintillation and encircled power — computable inside the propagation loop.
+- **Differentiable.** `jax.grad` runs through `solve` end to end, with
+  square-root checkpointing so reverse mode stays affordable at large `nz`.
 - **Typed and linted.** Type hints throughout; `ruff` clean.
 
 ## Installation
@@ -452,6 +454,76 @@ Two caveats worth knowing. `strehl_ratio` is a ratio of peaks, so it can exceed
 the spatial `scintillation_index` is dominated by dark background unless the
 beam fills the grid — pass a `mask` selecting the illuminated region.
 
+### Differentiation
+
+`solve` is a pure JAX function, so `jax.grad`, `jax.jvp` and `jax.vmap` work
+through it directly — including through the in-loop diagnostics, which makes
+any of them usable as an objective:
+
+```python
+def objective(phase):
+    psi, _ = solver.solve(psi_0 * jnp.exp(1j * phase), return_history=False)
+    return -pws.encircled_power(psi, sim_config, radius=1.0)
+
+gradient = jax.grad(objective)(phase)
+```
+
+What carries a gradient:
+
+| quantity | how |
+|---|---|
+| `psi_0` | directly |
+| `medium`, and anything inside it | directly — it is an arbitrary pytree |
+| parameters closed over by `delta_n_fn` | directly |
+| `n0`, `k0`, `dz` | through `solver.build_operators({'n0': ...})`, passed to `solve(operators=...)` |
+
+The diffraction operators are built once when the solver is constructed, from
+concrete configuration values. To differentiate with respect to one of those
+constants, rebuild the operators from a traced value:
+
+```python
+def objective(n0):
+    operators = solver.build_operators({'n0': n0})
+    psi, _ = solver.solve(psi_0, operators=operators, return_history=False)
+    return beam_spread(psi)
+```
+
+Constructing a whole new solver inside the traced function works too and gives
+the same gradient; `build_operators` is simply cheaper, since it reuses the
+PML profile and skips revalidation on every evaluation.
+
+Two conventions to know. JAX returns the **conjugate** cotangent for a real
+loss of a complex input, so the directional derivative pairs as
+`Re(grad * delta)`. And a *real* `delta_n` enters as a pure phase, so the total
+power is exactly insensitive to it — a gradient of zero there is correct, not a
+bug. Differentiate a quantity the medium can actually move, such as the beam
+radius or encircled power.
+
+### Checkpointing
+
+Reverse mode has to keep enough state to replay the propagation backwards,
+which is linear in `nz` if nothing is done about it. `solve` groups steps into
+blocks of `sqrt(nz)` and rematerializes each group, so the cost grows as
+`sqrt(nz)` instead. Measured on a Kerr run at 64×64, as compiled temporary
+memory for one reverse pass:
+
+| `nz` | `checkpoint=False` | `checkpoint=True` | |
+|---|---|---|---|
+| 100 | 23.0 MB | 2.7 MB | 8.5× |
+| 400 | 91.8 MB | 5.3 MB | 17.2× |
+| 1600 | 367.1 MB | 10.6 MB | **34.7×** |
+
+The saving grows with `nz`, which is the signature of `sqrt(n)` against `n`:
+over that 16× range the unchecked run grows 15.9× and the checkpointed one
+3.9×, against the 4.0× that `sqrt` predicts. It costs one extra forward pass
+per group during a backward pass and nothing at all when no gradient is taken,
+so it defaults to on. Pass `checkpoint=False` to benchmark against it.
+
+Per-step rematerialization — the more obvious choice — also helps, by a
+constant factor of about seven, but the scan still stores the state entering
+every step, so the growth stays linear. The grouping is what buys the change
+in scaling.
+
 ### Precision
 
 JAX defaults to float32, which caps the achievable accuracy. Switch before
@@ -508,7 +580,7 @@ stepper.
 
 ```python
 solve(psi_0, z_0=0.0, medium=None, save_every=1, return_history=True,
-      observable_fn=None)
+      observable_fn=None, checkpoint=True, operators=None)
 ```
 
 Returns `(psi_final, psi_history)`. `psi_history` is `None` when

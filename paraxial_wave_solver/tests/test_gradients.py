@@ -22,6 +22,7 @@ import math
 
 import jax
 import jax.numpy as jnp
+import pytest
 
 from paraxial_wave_solver.src.config import (
   PMLConfig,
@@ -414,3 +415,94 @@ def test_checkpoint_group_size_is_near_sqrt_nz():
       assert 0.4 * math.sqrt(nz) <= group <= 2.5 * math.sqrt(nz), (
         nz, save_every, group
       )
+
+
+# --------------------------------------------------------------------------
+# Physical parameters via build_operators
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name,value", [('n0', 1.0), ('k0', 2 * math.pi),
+                                        ('dz', 0.02)])
+def test_gradient_wrt_physical_parameters(name, value, x64):
+  """Constants that live on a frozen config are reachable through operators.
+
+  n0, k0 and dz are consumed as Python floats when the kernels are built, so
+  they carry no gradient by themselves. Rebuilding the operator arrays from
+  traced values puts them back in the graph.
+  """
+  sim_config = _grid(dz=0.02)
+  psi_0 = _beam(sim_config)
+  r2 = _radius_squared(sim_config)
+  solver = ParaxialWaveSolver(sim_config, SPLIT, NO_PML)
+
+  def objective(parameter):
+    operators = solver.build_operators({name: parameter})
+    psi, _ = solver.solve(psi_0, operators=operators, return_history=False)
+    return jnp.sum(jnp.abs(psi)**2 * r2)
+
+  analytic = jax.grad(objective)(value)
+  numeric = _directional_finite_difference(objective, value, 1.0, 1e-6)
+  assert jnp.allclose(analytic, numeric, rtol=FD_RTOL, atol=1e-9), (
+    f"{name}: adjoint {analytic} vs finite difference {numeric}"
+  )
+  assert float(jnp.abs(analytic)) > 0.0
+
+
+def test_build_operators_defaults_match_the_solver():
+  """With no overrides the builder reproduces what __init__ constructed."""
+  sim_config = _grid()
+  solver = ParaxialWaveSolver(sim_config, SPLIT, NO_PML)
+  rebuilt = solver.build_operators()
+  for key, value in solver._operators.items():
+    if isinstance(value, list):
+      for a, b in zip(value, rebuilt[key], strict=True):
+        assert jnp.allclose(a, b)
+    elif isinstance(value, dict):
+      for sub in value:
+        assert jnp.allclose(value[sub], rebuilt[key][sub])
+    else:
+      assert jnp.allclose(value, rebuilt[key])
+
+
+def test_build_operators_rejects_unknown_parameters():
+  solver = ParaxialWaveSolver(_grid(), SPLIT, NO_PML)
+  with pytest.raises(ValueError, match="Unrecognized operator parameters"):
+    solver.build_operators({'wavelength': 1.0})
+
+
+def test_build_operators_matches_rebuilding_the_whole_solver(x64):
+  """The two routes to a physical-parameter gradient agree.
+
+  Constructing a fresh solver inside the traced function also works - a config
+  built from a tracer is fine, and the gradient flows through its derived
+  properties. `build_operators` is the cheaper route, not the only one: it
+  reuses the cached PML profile and skips revalidation on every gradient
+  evaluation. Pinning the two together keeps the cheap path honest.
+  """
+  nx, nz = 32, 20
+  psi_0 = _beam(_grid(nx=nx, nz=nz))
+  r2 = _radius_squared(_grid(nx=nx, nz=nz))
+
+  def spread(psi):
+    return jnp.sum(jnp.abs(psi)**2 * r2)
+
+  def via_fresh_solver(n0):
+    config = SimulationConfig(
+      nx=nx, ny=nx, dx=0.2, dy=0.2, dz=0.02, nz=nz, wavelength=1.0, n0=n0
+    )
+    solver = ParaxialWaveSolver(config, SPLIT, NO_PML)
+    return spread(solver.solve(psi_0, return_history=False)[0])
+
+  cached = ParaxialWaveSolver(_grid(nx=nx, nz=nz), SPLIT, NO_PML)
+
+  def via_build_operators(n0):
+    operators = cached.build_operators({'n0': n0})
+    return spread(
+      cached.solve(psi_0, operators=operators, return_history=False)[0]
+    )
+
+  a = jax.grad(via_fresh_solver)(1.0)
+  b = jax.grad(via_build_operators)(1.0)
+  numeric = _directional_finite_difference(via_fresh_solver, 1.0, 1.0, 1e-6)
+  assert jnp.allclose(a, b, rtol=1e-10)
+  assert jnp.allclose(a, numeric, rtol=FD_RTOL)
