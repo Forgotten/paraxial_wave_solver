@@ -64,141 +64,169 @@ at `z_0 + j * save_every * dz`, so index `0` is `psi_0` itself.
 ## The equation being solved
 
 Every method in this package integrates the same quantity: the slowly varying
-**envelope** `psi`, not the physical field. This section states exactly what
-`psi` is and exactly what equation it obeys, because both conventions below are
-easy to get wrong and neither is guessable from the API.
+**envelope** $\psi$, not the physical field. This section states exactly what
+$\psi$ is and exactly what equation it obeys, because both conventions below
+are easy to get wrong and neither is guessable from the API.
 
 ### Derivation
 
-Start from the scalar Helmholtz equation for a monochromatic field `E`, with
-`k0 = 2*pi/wavelength` the vacuum wavenumber and `n(x, y, z)` the refractive
-index:
+Start from the scalar Helmholtz equation for a monochromatic field $E$, with
+$k_0 = 2\pi/\lambda$ the vacuum wavenumber and $n(x,y,z)$ the refractive index:
 
-```
-lap(E) + k0**2 * n**2 * E = 0
-```
+$$
+\nabla^2 E + k_0^2\, n^2(x,y,z)\, E = 0
+$$
 
-Factor out the fast carrier along the propagation axis, `E = psi * exp(1j*k*z)`
-with `k = k0 * n0`. Substituting and cancelling the carrier gives an equation
-that is still exact:
+Factor out the fast carrier along the propagation axis,
 
-```
-d2(psi)/dz2  +  2*1j*k * d(psi)/dz  +  lap_perp(psi)  +  k0**2 * (n**2 - n0**2) * psi  =  0
-```
+$$
+E(x,y,z) = \psi(x,y,z)\, e^{i k z}, \qquad k = k_0 n_0
+$$
+
+Substituting and cancelling the carrier gives an equation that is **still
+exact**:
+
+$$
+\frac{\partial^2 \psi}{\partial z^2}
+  + 2 i k \frac{\partial \psi}{\partial z}
+  + \nabla_\perp^2 \psi
+  + k_0^2 \left( n^2 - n_0^2 \right) \psi = 0
+$$
 
 Two approximations turn this into what the solver integrates.
 
 **1. The paraxial (slowly varying envelope) approximation** drops the second
-z-derivative, on the grounds that the envelope changes little over a wavelength:
+$z$-derivative, on the grounds that the envelope changes little over a
+wavelength:
 
-```
-|d2(psi)/dz2|  <<  |2*k * d(psi)/dz|
-```
+$$
+\left| \frac{\partial^2 \psi}{\partial z^2} \right|
+  \ll \left| 2 k \frac{\partial \psi}{\partial z} \right|
+$$
 
-This is the step that makes the problem an initial-value problem in `z`: one
+This is the step that makes the problem an initial-value problem in $z$: one
 first-order equation marching forward, rather than a boundary-value problem.
 It also discards the backward-propagating wave, so there are no reflections
 from index structure.
 
-**2. Weak index contrast.** Writing `n = n0 + delta_n` with `delta_n << n0`,
+**2. Weak index contrast.** Writing $n = n_0 + \delta n$ with
+$\delta n \ll n_0$,
 
-```
-n**2 - n0**2  =  2*n0*delta_n + delta_n**2  ~=  2*n0*delta_n
-```
+$$
+n^2 - n_0^2 = 2 n_0\, \delta n + \delta n^2 \;\approx\; 2 n_0\, \delta n
+$$
 
-What remains, solved for the z-derivative, is the equation this package
+What remains, solved for the $z$-derivative, is the equation this package
 integrates:
 
-```
-d(psi)/dz  =  (1j / (2*k0*n0)) * lap_perp(psi)  +  1j*k0 * delta_n * psi
-```
+$$
+\boxed{\;\frac{\partial \psi}{\partial z}
+  = \frac{i}{2 k_0 n_0} \nabla_\perp^2 \psi
+  + i k_0\, \delta n\, \psi \;}
+$$
 
 ### The full equation, with every optional term
 
-```
-d(psi)/dz  =  (1j / (2*k0*n0)) * L_perp(psi)
-              +  1j*k0 * (delta_n(x, y, z) + n2*|psi|**2) * psi
-              -  sigma(x, y) * psi
-```
+$$
+\frac{\partial \psi}{\partial z}
+  = \underbrace{\frac{i}{2 k_0 n_0} \mathcal{L}_\perp \psi}_{\text{diffraction}}
+  + \underbrace{i k_0 \left( \delta n(x,y,z) + n_2 \lvert \psi \rvert^2 \right) \psi}_{\text{refraction and Kerr}}
+  - \underbrace{\sigma(x,y)\, \psi}_{\text{PML}}
+$$
 
 | Term | Meaning | Controlled by |
 |---|---|---|
-| `(1j/(2*k0*n0)) * L_perp(psi)` | Diffraction | `method`, `fd_order`, `propagator` |
-| `1j*k0*delta_n*psi` | Refraction; complex `delta_n` gives absorption or gain | `delta_n_fn` |
-| `1j*k0*n2*\|psi\|**2*psi` | Kerr self-phase modulation | `n2` |
-| `-sigma*psi` | PML absorption, non-physical, zero in the interior | `PMLConfig` |
+| $\frac{i}{2 k_0 n_0} \mathcal{L}_\perp \psi$ | Diffraction | `method`, `fd_order`, `propagator` |
+| $i k_0\, \delta n\, \psi$ | Refraction; complex $\delta n$ gives absorption or gain | `delta_n_fn` |
+| $i k_0 n_2 \lvert \psi \rvert^2 \psi$ | Kerr self-phase modulation | `n2` |
+| $-\sigma\, \psi$ | PML absorption, non-physical, zero in the interior | `PMLConfig` |
 
-`L_perp` is the transverse Laplacian `d2/dx2 + d2/dy2`, discretized by the
-chosen `method`. Under complex coordinate stretching it becomes
+$\mathcal{L}_\perp$ is the transverse Laplacian
+$\partial^2/\partial x^2 + \partial^2/\partial y^2$, discretized by the chosen
+`method`. Under complex coordinate stretching it becomes
 
-```
-L_perp  =  (1/s_x) d/dx ( (1/s_x) d/dx )  +  (1/s_y) d/dy ( (1/s_y) d/dy ),
-s = 1 + 1j*sigma
-```
+$$
+\mathcal{L}_\perp
+  = \frac{1}{s_x} \frac{\partial}{\partial x}
+    \left( \frac{1}{s_x} \frac{\partial}{\partial x} \right)
+  + \frac{1}{s_y} \frac{\partial}{\partial y}
+    \left( \frac{1}{s_y} \frac{\partial}{\partial y} \right),
+  \qquad s = 1 + i\sigma
+$$
 
-which is where the absorption lives in that mode, and why `sigma` is then not
+which is where the absorption lives in that mode, and why $\sigma$ is then not
 also applied as a potential.
 
-With no PML and real `delta_n`, the equation is norm-conserving: the total
-power `sum(|psi|**2)` is invariant. That is what
+With no PML and real $\delta n$, the equation is norm-conserving: the total
+power $\sum \lvert \psi \rvert^2$ is invariant. That is what
 `test_energy_conservation_vacuum` checks.
 
 ### Wide-angle: the approximation that is not made
 
 `propagator='wide_angle'` skips approximation 1. Rather than dropping the
-second z-derivative, it factors Helmholtz into forward- and backward-travelling
-parts and keeps the forward one:
+second $z$-derivative, it factors Helmholtz into forward- and
+backward-travelling parts and keeps the forward one:
 
-```
-d(psi)/dz  =  1j * ( sqrt(k**2 + lap_perp) - k ) * psi
-```
+$$
+\frac{\partial \psi}{\partial z}
+  = i \left( \sqrt{k^2 + \nabla_\perp^2} - k \right) \psi
+$$
 
 The square root of an operator is awkward in general, which is why the
-literature reaches for Pade approximants. In Fourier space it is diagonal, so
+literature reaches for Padé approximants. In Fourier space it is diagonal, so
 no approximation is needed:
 
-```
-paraxial     multiplier:  exp(-1j * dz * k_perp**2 / (2*k))
-wide-angle   multiplier:  exp( 1j * dz * (sqrt(k**2 - k_perp**2) - k))
-```
+$$
+\widehat{D}_{\text{paraxial}}(h) = \exp\left( -\frac{i h k_\perp^2}{2k} \right),
+  \qquad
+  \widehat{D}_{\text{wide}}(h) = \exp\left( i h \left( \sqrt{k^2 - k_\perp^2} - k \right) \right)
+$$
 
-Expanding the root for `k_perp << k` gives `-k_perp**2/(2*k)`, so the paraxial
+Expanding the root for $k_\perp \ll k$ gives $-k_\perp^2 / 2k$, so the paraxial
 operator is the leading term of the wide-angle one. Past the light line
-(`k_perp > k`) the root turns imaginary and the multiplier decays, which is the
-correct treatment of evanescent components.
+($k_\perp > k$) the root turns imaginary and the multiplier decays, which is
+the correct treatment of evanescent components.
 
 ### What the steppers do with it
 
 **`split_step`** alternates the two halves of the equation, each solved exactly
-in its own domain — diffraction in Fourier space, everything else pointwise in
-real space. One Strang step is
+in its own domain — diffraction as a multiplier in Fourier space, everything
+else pointwise in real space. One Strang step is
 
-```
-psi  <-  N(dz/2) . D(dz) . N(dz/2) . psi
+$$
+\psi(z + \Delta z) = \mathcal{N}\!\left( \tfrac{\Delta z}{2} \right)
+  \, \mathcal{D}(\Delta z) \,
+  \mathcal{N}\!\left( \tfrac{\Delta z}{2} \right) \psi(z)
+$$
 
-D(h)  in Fourier space:  the multiplier above
-N(h)  in real space:     exp(1j*k0*(delta_n + n2*|psi|**2)*h)
-```
+where $\mathcal{D}$ applies $\widehat{D}$ above and
 
-with the PML applied as `exp(-sigma*dz/2)` at each end of the full step.
-`splitting_order=4` composes three such steps with Yoshida weights.
+$$
+\mathcal{N}(h) = \exp\left[ i k_0 \left( \delta n + n_2 \lvert \psi \rvert^2 \right) h \right]
+$$
 
-**`rk4`** applies the classic four-stage Runge-Kutta scheme directly to the
-right-hand side above, with `L_perp` a finite-difference stencil or the
-spectral Laplacian.
+with the PML applied as $e^{-\sigma \Delta z / 2}$ at each end of the full
+step. `splitting_order=4` composes three such steps with Yoshida weights
+$w_1 = \left( 2 - 2^{1/3} \right)^{-1}$ and $w_0 = 1 - 2 w_1$, the middle one
+running backwards.
+
+**`rk4`** applies the classic four-stage Runge–Kutta scheme directly to the
+right-hand side above, with $\mathcal{L}_\perp$ a finite-difference stencil or
+the spectral Laplacian.
 
 ### Two conventions to keep straight
 
-**The solver propagates an envelope, not the field.** `E = psi * exp(1j*k*z)`
-with `k = 2*pi*n0/wavelength`. Analytical beams return the full field by
-default; pass `envelope_only=True` when comparing them against solver output.
+**The solver propagates an envelope, not the field.** $E = \psi e^{ikz}$ with
+$k = 2\pi n_0/\lambda$. Analytical beams return the full field by default; pass
+`envelope_only=True` when comparing them against solver output.
 
-**Refractive index is supplied as a perturbation.** `delta_n_fn(z, medium)` must
-return `delta_n = n - n0`, so **vacuum is zero, not one**. Omit `delta_n_fn`
-entirely and the solver treats the domain as vacuum and drops the refraction term
-altogether. Returning `1.0` for vacuum injects a spurious `exp(1j*k0*lz)`,
-which stays invisible whenever `k0*lz` happens to be a multiple of `2*pi` —
-as it is for `wavelength=1.0` with an integer propagation distance.
+**Refractive index is supplied as a perturbation.** `delta_n_fn(z, medium)`
+must return $\delta n = n - n_0$, so **vacuum is zero, not one**. Omit
+`delta_n_fn` entirely and the solver treats the domain as vacuum and drops the
+refraction term altogether. Returning $1$ for vacuum injects a spurious
+$e^{i k_0 L_z}$, which stays invisible whenever $k_0 L_z$ happens to be a
+multiple of $2\pi$ — as it is for `wavelength=1.0` with an integer propagation
+distance.
 
 ## Choosing a solver
 
