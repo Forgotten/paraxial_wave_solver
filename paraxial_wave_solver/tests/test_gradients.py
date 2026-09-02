@@ -68,10 +68,15 @@ def _radius_squared(sim_config):
 
 
 def _indexed_medium_fn(sim_config):
-  """delta_n_fn that reads slice round(z/dz) out of a volume."""
+  """delta_n_fn that reads the slice containing z out of a volume.
+
+  floor, not round: the split-step samples the medium at each sub-step
+  midpoint, and round-half-to-even on i + 0.5 alternates, which would sample
+  half the slices twice and the other half never.
+  """
   def delta_n_fn(z, medium):
     index = jnp.clip(
-      jnp.round(z / sim_config.dz).astype(int), 0, sim_config.nz - 1
+      jnp.floor(z / sim_config.dz).astype(int), 0, sim_config.nz - 1
     )
     return medium[:, :, index]
   return delta_n_fn

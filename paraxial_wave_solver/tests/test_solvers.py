@@ -375,7 +375,7 @@ def test_medium_argument_avoids_recompilation():
   )
 
   def delta_n_fn(z, medium):
-    idx = jnp.clip(jnp.round(z / sim_config.dz).astype(int), 0,
+    idx = jnp.clip(jnp.floor(z / sim_config.dz).astype(int), 0,
                    sim_config.nz - 1)
     return medium[:, :, idx]
 

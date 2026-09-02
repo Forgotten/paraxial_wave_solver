@@ -102,7 +102,7 @@ def run_simulation_total(
   # z at which it starts, so that one compiled solver serves every chunk.
   def delta_n_fn(z, medium):
     volume, z_start = medium
-    idx = jnp.clip(jnp.round((z - z_start) / sim_config.dz).astype(int), 0,
+    idx = jnp.clip(jnp.floor((z - z_start) / sim_config.dz).astype(int), 0,
                    sim_config.nz - 1)
     return volume[:, :, idx]
 

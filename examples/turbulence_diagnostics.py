@@ -60,7 +60,7 @@ def run(
 
   def delta_n_fn(z, medium):
     index = jnp.clip(
-      jnp.round(z / sim_config.dz).astype(int), 0, sim_config.nz - 1
+      jnp.floor(z / sim_config.dz).astype(int), 0, sim_config.nz - 1
     )
     return medium[:, :, index]
 
