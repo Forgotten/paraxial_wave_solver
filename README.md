@@ -610,6 +610,7 @@ Run these after `pip install -e .`:
 | `turbulence_propagation.py` | LG superposition through Von Karman turbulence |
 | `kerr_self_focusing.py` | Self-focusing, dealiasing, and 2nd vs 4th order splitting |
 | `turbulence_diagnostics.py` | Beam quality vs turbulence strength, measured in-loop |
+| `adjoint_sensitivity.py` | Sensitivity maps and phase-mask inverse design, via `jax.grad` |
 | `demo.ipynb` | Notebook walkthrough of both solver families |
 
 ```bash
