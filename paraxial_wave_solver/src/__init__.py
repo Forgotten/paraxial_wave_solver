@@ -27,6 +27,7 @@ from .utils import (
   get_laguerre_gaussian_analytical,
   hermite_gaussian_beam,
   laguerre_gaussian_beam,
+  phase_screen,
   random_medium,
   random_medium_spectral,
 )
@@ -75,6 +76,7 @@ __all__ = [
   "get_analytical_beam",
   "get_laguerre_gaussian_analytical",
   "get_hermite_gaussian_analytical",
+  "phase_screen",
   "random_medium",
   "random_medium_spectral",
 ]

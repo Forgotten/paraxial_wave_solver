@@ -367,7 +367,10 @@ delta_n = pws.random_medium(
 )
 
 def delta_n_fn(z, medium):
-    index = jnp.clip(jnp.round(z / sim_config.dz).astype(int),
+    # floor, not round: the split-step samples at sub-step midpoints, and
+    # round-half-to-even on i + 0.5 would visit half the slices twice and
+    # the other half never.
+    index = jnp.clip(jnp.floor(z / sim_config.dz).astype(int),
                      0, sim_config.nz - 1)
     return medium[:, :, index]
 
@@ -381,9 +384,45 @@ psi_final, _ = solver.solve(psi_0, medium=delta_n, return_history=False)
 together with the absolute `z` at which it starts, for example, which is how
 `examples/turbulence_propagation.py` chains chunks through a single solver.
 
-Two generators are provided: `random_medium` for a Gaussian correlation
+Two volume generators are provided: `random_medium` for a Gaussian correlation
 function, and `random_medium_spectral` for a Von Karman turbulence spectrum
 parameterised by `Cn2`, and the outer and inner scales `L0` and `l0`.
+
+### Streaming phase screens
+
+A volume costs `nx * ny * nz` — 105 MB at 256×256×400, a gigabyte at
+production sizes — and exists only so `delta_n_fn` can index it. `phase_screen`
+generates one transverse screen at a time instead, so the medium becomes a
+PRNG key:
+
+```python
+def delta_n_fn(z, medium):
+    step = jnp.floor(z / sim_config.dz).astype(int)
+    return pws.phase_screen(
+        jax.random.fold_in(medium, step), sim_config,
+        correlation_length=1e-3, strength=4.4e-7,
+    )
+
+solver.solve(psi_0, medium=jax.random.PRNGKey(0))
+```
+
+`fold_in` gives a reproducible screen per step without splitting `nz` keys up
+front, and it traces, so the step index can be a tracer.
+
+This reproduces a slice of `random_medium` in the transverse plane — same
+variance, same correlation length — because integrating the 3D spectrum over
+`kz` leaves the same functional form. **It does not reproduce correlation along
+z.** `random_medium` filters isotropically in three dimensions, so its
+consecutive slices are correlated; independent screens are the thin-screen
+limit. Measured lag-one correlation:
+
+| | volume | screens |
+|---|---|---|
+| transverse | 0.986 | 0.984 |
+| longitudinal | 0.983 | **0.000** |
+
+Use screens when the step already exceeds the longitudinal correlation length,
+which is the usual case; generate the volume when it does not.
 
 ### Controlling memory
 

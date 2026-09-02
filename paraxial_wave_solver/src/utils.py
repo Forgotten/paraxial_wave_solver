@@ -356,6 +356,60 @@ def random_medium(
   return delta_n * (strength / jnp.std(delta_n))
 
 
+def phase_screen(
+  key: jax.Array,
+  sim_config: SimulationConfig,
+  correlation_length: float,
+  strength: float,
+) -> Field:
+  """Generates one transverse refractive index screen, without a volume.
+
+  Statistically this reproduces a single xy slice of `random_medium`. The 3D
+  spectrum there is exp(-(kx^2 + ky^2 + kz^2) L^2 / 4); integrating it over kz
+  to get the marginal seen by one slice leaves exp(-(kx^2 + ky^2) L^2 / 4)
+  times a constant, which is the same functional form. So the transverse
+  correlation length and variance match.
+
+  What does *not* carry over is correlation along z. `random_medium` filters
+  isotropically in three dimensions, so consecutive slices of it are
+  correlated over the same length scale; screens drawn here from independent
+  keys are not. This is the standard thin-screen model and is the right choice
+  when the step size already exceeds the longitudinal correlation length, but
+  it is an approximation rather than a drop-in replacement. Where longitudinal
+  correlation matters, generate the volume.
+
+  The point of it is memory: a run needs one (nx, ny) screen at a time rather
+  than an (nx, ny, nz) volume, which at 256x256x400 is 105 MB that never has
+  to exist.
+
+  Args:
+    key: JAX random key. Use `jax.random.fold_in(key, step)` inside a
+      propagation loop to get a reproducible screen per step.
+    sim_config: Simulation configuration.
+    correlation_length: Transverse correlation length (physical units).
+    strength: Standard deviation of the refractive index fluctuation.
+
+  Returns:
+    A real (nx, ny) array.
+  """
+  kx = 2 * jnp.pi * jnp.fft.fftfreq(sim_config.nx, d=sim_config.dx)
+  ky = 2 * jnp.pi * jnp.fft.rfftfreq(sim_config.ny, d=sim_config.dy)
+  k_squared = kx[:, None]**2 + ky[None, :]**2
+
+  amplitude = jnp.exp(-k_squared * correlation_length**2 / 8.0)
+
+  key_real, key_imag = jax.random.split(key)
+  shape = amplitude.shape
+  noise = (
+    jax.random.normal(key_real, shape)
+    + 1j * jax.random.normal(key_imag, shape)
+  )
+  screen = jnp.fft.irfft2(
+    noise * amplitude, s=(sim_config.nx, sim_config.ny)
+  )
+  return screen * (strength / jnp.std(screen))
+
+
 def random_medium_spectral(
   sim_config: SimulationConfig,
   Cn2: float,
