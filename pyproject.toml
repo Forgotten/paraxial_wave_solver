@@ -28,6 +28,9 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["paraxial_wave_solver/tests"]
+markers = [
+    "slow: memory or timing measurements; environment sensitive",
+]
 pythonpath = ["."]
 
 [tool.ruff]

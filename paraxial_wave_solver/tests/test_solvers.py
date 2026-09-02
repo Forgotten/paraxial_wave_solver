@@ -211,8 +211,10 @@ def test_z_grid_uses_exact_dz_spacing():
     NO_PML, delta_n_fn,
   )
   with jax.disable_jit():
+    # checkpoint=False so the recorded z values are concrete:
+    # jax.checkpoint traces its body even under disable_jit.
     solver.solve(_centered_gaussian(sim_config), z_0=2.0,
-                 return_history=False)
+                 return_history=False, checkpoint=False)
 
   # Split-step evaluates the medium at step midpoints.
   expected = 2.0 + 0.1 * jnp.arange(10) + 0.05
