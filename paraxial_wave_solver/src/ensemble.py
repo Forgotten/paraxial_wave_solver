@@ -14,8 +14,14 @@ grid requires roughly 2.1 GB of live field before FFT scratch is counted.
 inside, over the realizations of one chunk, and `lax.map` outside, over the
 chunks. Since `lax.map` is a scan, peak memory is set by the chunk rather
 than by the ensemble, while the vectorization within a chunk is retained.
+
+`ensemble_standard_error` answers the question that follows: how large the
+ensemble has to be. It bootstraps the realization axis through the same
+chunked map, so the convergence check costs no more memory than the
+propagation did.
 """
 
+from collections.abc import Callable
 from typing import Any
 
 import jax
@@ -92,28 +98,99 @@ def ensemble_solve(
       "across realizations and would be destroyed by the first chunk."
     )
 
-  n_realizations = keys.shape[0]
-  chunk = n_realizations if chunk_size is None else int(chunk_size)
-  if chunk < 1:
+  if chunk_size is not None and int(chunk_size) < 1:
     raise ValueError(f"chunk_size must be positive, got {chunk_size}.")
-  chunk = min(chunk, n_realizations)
-
-  # Pad up to a whole number of chunks with repeats of the first key, so that
-  # every chunk has the same shape and the propagation compiles once.
-  padding = (-n_realizations) % chunk
-  if padding:
-    keys = jnp.concatenate([keys, keys[jnp.zeros(padding, dtype=int)]])
-  chunked = keys.reshape(-1, chunk, *keys.shape[1:])
 
   def one(key: jax.Array) -> tuple[Field, Any]:
     return solver.solve(
       psi_0, medium=key, return_history=return_history, **solve_kwargs
     )
 
-  stacked = lax.map(jax.vmap(one), chunked)
+  return _chunked_map(one, keys, chunk_size)
+
+
+def ensemble_standard_error(
+  samples: jax.Array,
+  statistic_fn: Callable[[jax.Array], Any],
+  key: jax.Array,
+  *,
+  n_resamples: int = 200,
+  chunk_size: int | None = 1,
+) -> Any:
+  """Returns the bootstrap standard error of an ensemble statistic.
+
+  Resamples the realization axis with replacement, re-evaluates
+  `statistic_fn` on each resample, and returns the standard deviation of the
+  results. This is the quantity that says whether an ensemble is large
+  enough, and it differs sharply between statistics: on the same ensemble,
+  beam wander and the scintillation index can disagree by more than an order
+  of magnitude in relative precision, because the latter is a ratio of fourth
+  to second intensity moments and inherits the heavy tail of a near-exponential
+  intensity distribution.
+
+  The estimate is itself noisy, at a relative precision of about
+  1 / sqrt(2 * n_resamples), so the default of 200 resamples resolves the
+  standard error to roughly 5%. It also inherits any bias in the statistic:
+  a quantity biased at small ensemble size has a small standard error and a
+  wrong central value, which the standard error cannot reveal.
+
+  Args:
+    samples: Array whose leading axis is the realization axis. Usually the
+      fields returned by `ensemble_solve`, but any per-realization array
+      works.
+    statistic_fn: Callable mapping a resampled `samples` array to a scalar or
+      to a pytree of arrays, for example
+      `lambda f: ensemble_statistics(f, sim_config)`.
+    key: PRNG key for the resampling.
+    n_resamples: Number of bootstrap resamples.
+    chunk_size: Resamples evaluated simultaneously. Defaults to 1, because a
+      resample gathers the whole ensemble and vectorizing over resamples
+      multiplies that: 200 resamples of 512 realizations on a 96 x 96 grid is
+      7.5 GB vectorized against 38 MB one at a time. Raise it to trade memory
+      for speed.
+
+  Returns:
+    The standard error, with the same structure as `statistic_fn`'s output.
+    Array-valued entries get their standard error elementwise.
+  """
+  n_realizations = samples.shape[0]
+
+  def one(resample_key: jax.Array) -> Any:
+    indices = jax.random.randint(
+      resample_key, (n_realizations,), 0, n_realizations
+    )
+    return statistic_fn(samples[indices])
+
+  resampled = _chunked_map(
+    one, jax.random.split(key, n_resamples), chunk_size
+  )
+  return jax.tree_util.tree_map(lambda a: jnp.std(a, axis=0), resampled)
+
+
+def _chunked_map(
+  fn: Callable[[jax.Array], Any],
+  xs: jax.Array,
+  chunk_size: int | None,
+) -> Any:
+  """Maps `fn` over the leading axis of `xs`, vectorized within chunks.
+
+  `vmap` inside a `lax.map`: the vectorization is retained within a chunk
+  while peak memory is set by the chunk rather than by the full axis. The
+  axis is padded with repeats of its first entry so that every chunk has the
+  same shape and `fn` compiles once, and the padded results are discarded.
+  """
+  n = xs.shape[0]
+  chunk = min(n if chunk_size is None else int(chunk_size), n)
+
+  padding = (-n) % chunk
+  if padding:
+    xs = jnp.concatenate([xs, xs[jnp.zeros(padding, dtype=int)]])
+  chunked = xs.reshape(-1, chunk, *xs.shape[1:])
+
+  stacked = lax.map(jax.vmap(fn), chunked)
 
   def flatten(leaf: Field) -> Field:
     # (n_chunks, chunk, ...) -> (n_chunks * chunk, ...), then drop the padding.
-    return leaf.reshape(-1, *leaf.shape[2:])[:n_realizations]
+    return leaf.reshape(-1, *leaf.shape[2:])[:n]
 
   return jax.tree_util.tree_map(flatten, stacked)

@@ -15,7 +15,11 @@ from paraxial_wave_solver.src.config import (
   SimulationConfig,
   SolverConfig,
 )
-from paraxial_wave_solver.src.ensemble import ensemble_solve
+from paraxial_wave_solver.src.diagnostics import ensemble_statistics
+from paraxial_wave_solver.src.ensemble import (
+  ensemble_solve,
+  ensemble_standard_error,
+)
 from paraxial_wave_solver.src.solvers import ParaxialWaveSolver
 from paraxial_wave_solver.src.utils import gaussian_beam, phase_screen
 
@@ -239,3 +243,107 @@ def test_donation_is_rejected():
 
   with pytest.raises(ValueError, match='donate_psi_0 is incompatible'):
     ensemble_solve(solver, psi_0, keys, donate_psi_0=True)
+
+
+# --------------------------------------------------------------------------
+# Bootstrap standard error
+# --------------------------------------------------------------------------
+
+def test_bootstrap_recovers_the_standard_error_of_a_mean(x64):
+  """For the mean of normal samples the standard error is sigma / sqrt(n).
+
+  The bootstrap has no knowledge of that formula, so reproducing it is a real
+  check rather than a restatement of the implementation.
+  """
+  n_realizations = 400
+  sigma = 3.0
+  samples = sigma * jax.random.normal(
+    jax.random.PRNGKey(0), (n_realizations,)
+  )
+
+  error = ensemble_standard_error(
+    samples, jnp.mean, jax.random.PRNGKey(1), n_resamples=400
+  )
+
+  expected = float(jnp.std(samples)) / jnp.sqrt(n_realizations)
+  assert float(error) == pytest.approx(expected, rel=0.15)
+
+
+def test_bootstrap_error_shrinks_as_one_over_sqrt_n(x64):
+  """Quadrupling the ensemble halves the standard error."""
+  key = jax.random.PRNGKey(2)
+
+  def error_at(n_realizations):
+    samples = jax.random.normal(key, (n_realizations,))
+    return float(ensemble_standard_error(
+      samples, jnp.mean, jax.random.PRNGKey(3), n_resamples=600
+    ))
+
+  small = error_at(250)
+  large = error_at(1000)
+
+  assert large / small == pytest.approx(0.5, rel=0.15)
+
+
+def test_bootstrap_handles_a_pytree_valued_statistic(x64):
+  """A statistic returning a dict gets an error per entry, elementwise."""
+  solver, sim_config, psi_0 = _turbulence_solver()
+  keys = jax.random.split(jax.random.PRNGKey(4), 12)
+  fields, _ = ensemble_solve(solver, psi_0, keys, chunk_size=4)
+
+  errors = ensemble_standard_error(
+    fields,
+    lambda f: ensemble_statistics(f, sim_config),
+    jax.random.PRNGKey(5),
+    n_resamples=16,
+  )
+
+  assert set(errors) == set(ensemble_statistics(fields, sim_config))
+  assert jnp.ndim(errors['wander_x']) == 0
+  assert errors['mean_intensity'].shape == (32, 32)
+  assert float(errors['wander_x']) > 0.0
+
+
+def test_bootstrap_is_deterministic_in_its_key(x64):
+  """The same key gives the same standard error; a different one does not."""
+  samples = jax.random.normal(jax.random.PRNGKey(6), (200,))
+
+  first = ensemble_standard_error(
+    samples, jnp.mean, jax.random.PRNGKey(7), n_resamples=64
+  )
+  again = ensemble_standard_error(
+    samples, jnp.mean, jax.random.PRNGKey(7), n_resamples=64
+  )
+  other = ensemble_standard_error(
+    samples, jnp.mean, jax.random.PRNGKey(8), n_resamples=64
+  )
+
+  assert float(first) == float(again)
+  assert float(first) != float(other)
+
+
+@pytest.mark.parametrize('chunk_size', [1, 4, 16, None])
+def test_bootstrap_chunk_size_does_not_change_the_result(chunk_size, x64):
+  """Chunking resamples is a memory control, not a change of estimator."""
+  samples = jax.random.normal(jax.random.PRNGKey(9), (120,))
+
+  reference = ensemble_standard_error(
+    samples, jnp.mean, jax.random.PRNGKey(10), n_resamples=48, chunk_size=1
+  )
+  chunked = ensemble_standard_error(
+    samples, jnp.mean, jax.random.PRNGKey(10), n_resamples=48,
+    chunk_size=chunk_size,
+  )
+
+  assert float(chunked) == pytest.approx(float(reference), rel=1e-12)
+
+
+def test_bootstrap_of_a_degenerate_ensemble_is_zero(x64):
+  """Identical realizations cannot be resampled into disagreement."""
+  samples = jnp.full((32,), 2.5)
+
+  error = ensemble_standard_error(
+    samples, jnp.mean, jax.random.PRNGKey(11), n_resamples=32
+  )
+
+  assert float(error) == pytest.approx(0.0, abs=1e-14)
