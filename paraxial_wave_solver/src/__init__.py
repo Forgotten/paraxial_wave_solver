@@ -18,6 +18,7 @@ from .diagnostics import (
   strehl_ratio,
   total_power,
 )
+from .ensemble import ensemble_solve
 from .pml import PMLData, StretchFields, generate_pml_profile
 from .solvers import ParaxialWaveSolver, propagate
 from .utils import (
@@ -55,6 +56,7 @@ __all__ = [
   "Field",
   "ParaxialWaveSolver",
   "propagate",
+  "ensemble_solve",
   "generate_pml_profile",
   "enable_x64",
   "beam_diagnostics",
