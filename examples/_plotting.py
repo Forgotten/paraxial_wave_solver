@@ -181,3 +181,71 @@ def plot_xz_intensity(
   ax.set_ylabel('x')
   ax.set_title(title)
   return image
+
+
+def plot_ensemble_summary(
+  single: Field,
+  mean: Field,
+  scintillation: Field,
+  sim_config: SimulationConfig,
+  path: PathLike_,
+  title: str,
+) -> None:
+  """Draws the short-exposure, long-exposure and scintillation panels.
+
+  The three panels are the visual content of an ensemble average: one
+  realization is speckled, the ensemble mean is smooth and broader, and the
+  scintillation map shows where the fluctuation is concentrated.
+
+  The first two panels share a colour scale, since the point of the
+  comparison is that averaging redistributes intensity rather than that the
+  two have different dynamic ranges.
+
+  The scintillation panel is restricted to the illuminated region. The index
+  is a ratio normalized by the mean intensity, so in the dark background the
+  denominator approaches zero and the ratio diverges; left unmasked, the panel
+  shows only the grid edges and the beam is uniformly blank.
+
+  Args:
+    single: Intensity of one realization, shape (nx, ny).
+    mean: Ensemble-averaged intensity, shape (nx, ny).
+    scintillation: Pointwise scintillation index, shape (nx, ny).
+    sim_config: Simulation configuration, for the transverse extent.
+    path: Destination passed to savefig.
+    title: Figure suptitle.
+  """
+  extent_mm = [
+    0.0, sim_config.lx * 1e3, 0.0, sim_config.ly * 1e3,
+  ]
+  peak = float(jnp.max(mean))
+
+  illuminated = mean > 0.01 * peak
+  masked = jnp.where(illuminated, scintillation, jnp.nan)
+  inside = scintillation[illuminated]
+  upper = float(jnp.percentile(inside, 99)) if inside.size else 1.0
+
+  speckle = plt.get_cmap('viridis').copy()
+  speckle.set_bad(color='0.92')
+
+  fig, axes = plt.subplots(1, 3, figsize=(15, 4.6))
+  panels = (
+    (single, 'Single realization (short exposure)', 'inferno', (0, peak)),
+    (mean, r'Ensemble mean $\langle I \rangle$ (long exposure)',
+     'inferno', (0, peak)),
+    (masked, r'Scintillation index $\sigma_I^2$ (illuminated region)',
+     speckle, (0, upper)),
+  )
+  for ax, (field, panel_title, cmap, limits) in zip(axes, panels, strict=True):
+    kwargs = {} if limits is None else {'vmin': limits[0], 'vmax': limits[1]}
+    image = ax.imshow(
+      jnp.asarray(field).T, origin='lower', cmap=cmap,
+      extent=extent_mm, **kwargs,
+    )
+    ax.set_title(panel_title, fontsize=11)
+    ax.set_xlabel('x (mm)')
+    ax.set_ylabel('y (mm)')
+    plt.colorbar(image, ax=ax, fraction=0.046)
+
+  fig.suptitle(title, fontsize=13)
+  fig.tight_layout()
+  fig.savefig(path, dpi=130)
