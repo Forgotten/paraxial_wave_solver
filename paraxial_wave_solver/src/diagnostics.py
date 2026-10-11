@@ -9,10 +9,16 @@ difference between a few kilobytes and a few gigabytes.
 Unless a mask is passed, quantities are computed over the whole grid. When a
 PML is present its absorbing region is part of that grid, so one needs to
 trim the field before measuring as the PML may bias the result.
+
+The functions from `long_exposure_intensity` onwards are the exception to the
+above: they take an ensemble of fields with a leading realization axis, as
+returned by `ensemble_solve`, and reduce over it. They accept complex fields,
+whereas `ensemble_scintillation_index` takes intensities.
 """
 
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 
 from .config import Field, SimulationConfig
@@ -294,6 +300,170 @@ def ensemble_scintillation_index(intensities: Field) -> Field:
   mean = jnp.mean(intensities, axis=0)
   mean_square = jnp.mean(intensities**2, axis=0)
   return mean_square / mean**2 - 1.0
+
+
+def long_exposure_intensity(fields: Field) -> Field:
+  """Returns the ensemble-averaged intensity <|psi|^2>.
+
+  The long-exposure beam: what a detector integrating over many independent
+  realizations of the medium records. It is smoother and broader than any
+  single realization, because beam wander that displaces the instantaneous
+  pattern appears here as a widening of the average.
+
+  Args:
+    fields: Complex fields of shape (n_realizations, nx, ny), as returned by
+      `ensemble_solve`.
+
+  Returns:
+    A real array of shape (nx, ny).
+  """
+  return jnp.mean(jnp.abs(fields)**2, axis=0)
+
+
+def beam_wander(
+  fields: Field,
+  sim_config: SimulationConfig,
+) -> tuple[Field, Field]:
+  """Returns the standard deviation of the centroid across realizations.
+
+  The instantaneous beam centroid moves from realization to realization; its
+  spread is beam wander. This is a first-moment statistic and converges
+  quickly with ensemble size - roughly as 1 / sqrt(n_realizations) - in
+  contrast to `ensemble_scintillation_index`, which is a ratio of fourth to
+  second intensity moments and needs substantially larger ensembles for
+  comparable precision.
+
+  Args:
+    fields: Complex fields of shape (n_realizations, nx, ny).
+    sim_config: Simulation configuration.
+
+  Returns:
+    A tuple (sigma_x, sigma_y) of two scalars, in the same units as dx and dy.
+  """
+  x, y = _coordinates(sim_config)
+  intensity = jnp.abs(fields)**2
+  total = jnp.sum(intensity, axis=(1, 2))
+  x_bar = jnp.sum(x * intensity, axis=(1, 2)) / total
+  y_bar = jnp.sum(y * intensity, axis=(1, 2)) / total
+  return jnp.std(x_bar), jnp.std(y_bar)
+
+
+def mutual_coherence(fields: Field) -> Field:
+  """Returns the modulus of the complex degree of coherence about the peak.
+
+  With r0 the peak of the long-exposure intensity,
+
+      mu(r) = |<psi(r0) conj(psi(r))>| / sqrt(<I(r0)> <I(r)>),
+
+  averaged over realizations. It equals 1 at r0 by construction and decays
+  with separation as turbulence destroys the field correlation. Unlike every
+  other ensemble statistic here this one requires the complex field rather
+  than the intensity, since it measures a correlation of phase as well as
+  amplitude.
+
+  Args:
+    fields: Complex fields of shape (n_realizations, nx, ny).
+
+  Returns:
+    A real array of shape (nx, ny), with values in [0, 1].
+  """
+  mean_intensity = jnp.mean(jnp.abs(fields)**2, axis=0)
+  index_x, index_y = jnp.unravel_index(
+    jnp.argmax(mean_intensity), mean_intensity.shape
+  )
+  reference = fields[:, index_x, index_y]
+  cross = jnp.mean(reference[:, None, None] * jnp.conj(fields), axis=0)
+  denominator = jnp.sqrt(mean_intensity[index_x, index_y] * mean_intensity)
+  return jnp.abs(cross) / denominator
+
+
+def coherence_radius(
+  fields: Field,
+  sim_config: SimulationConfig,
+  threshold: float = 1.0 / jnp.e,
+) -> Field:
+  """Returns the smallest separation at which coherence falls below a level.
+
+  Measured from the peak of the long-exposure intensity, in any transverse
+  direction, using `mutual_coherence`. The conventional threshold of 1/e
+  makes this the transverse coherence length of the field.
+
+  The value is quantized by the grid: it is the distance to the nearest cell
+  whose coherence is below the threshold, with no interpolation, so it cannot
+  resolve a coherence length finer than dx.
+
+  Args:
+    fields: Complex fields of shape (n_realizations, nx, ny).
+    sim_config: Simulation configuration.
+    threshold: Coherence level defining the radius.
+
+  Returns:
+    A scalar, in the same units as dx. Infinite if coherence never drops
+    below the threshold anywhere on the grid.
+  """
+  mu = mutual_coherence(fields)
+  mean_intensity = jnp.mean(jnp.abs(fields)**2, axis=0)
+  index_x, index_y = jnp.unravel_index(
+    jnp.argmax(mean_intensity), mean_intensity.shape
+  )
+  x, y = _coordinates(sim_config)
+  separation = jnp.sqrt(
+    (x - x[index_x, 0])**2 + (y - y[0, index_y])**2
+  )
+  return jnp.min(jnp.where(mu < threshold, separation, jnp.inf))
+
+
+def ensemble_statistics(
+  fields: Field,
+  sim_config: SimulationConfig,
+) -> dict[str, Any]:
+  """Returns the standard turbulence statistics of an ensemble.
+
+  Args:
+    fields: Complex fields of shape (n_realizations, nx, ny), as returned by
+      `ensemble_solve`.
+    sim_config: Simulation configuration.
+
+  Returns:
+    A dict holding, as scalars, 'wander_x', 'wander_y', 'coherence_radius',
+    'on_axis_scintillation_index', the long-exposure widths
+    'long_exposure_width_x' and 'long_exposure_width_y', and the mean
+    single-realization widths 'short_exposure_width_x' and
+    'short_exposure_width_y'; and, as arrays of shape (nx, ny),
+    'mean_intensity' and 'scintillation_index'.
+
+    The two pairs of widths are the quantitative form of the long-exposure
+    against short-exposure contrast: the former measures the averaged beam,
+    the latter the average of the individual beams, and turbulence makes the
+    former the larger of the two.
+  """
+  intensity = jnp.abs(fields)**2
+  mean_intensity = jnp.mean(intensity, axis=0)
+  index_x, index_y = jnp.unravel_index(
+    jnp.argmax(mean_intensity), mean_intensity.shape
+  )
+  on_axis = intensity[:, index_x, index_y]
+
+  wander_x, wander_y = beam_wander(fields, sim_config)
+  long_width_x, long_width_y = beam_width(
+    jnp.sqrt(mean_intensity).astype(fields.dtype), sim_config
+  )
+  short_widths = jax.vmap(lambda f: beam_width(f, sim_config))(fields)
+
+  return {
+    'mean_intensity': mean_intensity,
+    'scintillation_index': ensemble_scintillation_index(intensity),
+    'on_axis_scintillation_index': (
+      jnp.mean(on_axis**2) / jnp.mean(on_axis)**2 - 1.0
+    ),
+    'wander_x': wander_x,
+    'wander_y': wander_y,
+    'coherence_radius': coherence_radius(fields, sim_config),
+    'long_exposure_width_x': long_width_x,
+    'long_exposure_width_y': long_width_y,
+    'short_exposure_width_x': jnp.mean(short_widths[0]),
+    'short_exposure_width_y': jnp.mean(short_widths[1]),
+  }
 
 
 def encircled_power(

@@ -280,3 +280,187 @@ def test_scintillation_index_mask_restricts_the_average(x64):
   assert diagnostics.scintillation_index(psi, mask=everywhere) == pytest.approx(
     whole_grid, rel=1e-9
   )
+
+
+# --------------------------------------------------------------------------
+# Ensemble statistics
+# --------------------------------------------------------------------------
+
+def _displaced_gaussians(grid, offsets, w0=1.0):
+  """Returns an ensemble of identical Gaussians displaced along x."""
+  x = jnp.arange(grid.nx) * grid.dx
+  y = jnp.arange(grid.ny) * grid.dy
+  centre_y = grid.ly / 2
+
+  def one(offset):
+    r2 = (x[:, None] - (grid.lx / 2 + offset))**2 + (y[None, :] - centre_y)**2
+    return jnp.exp(-r2 / w0**2).astype(complex)
+
+  return jax.vmap(one)(offsets)
+
+
+def test_long_exposure_intensity_is_the_mean_of_the_intensities(x64):
+  """The long-exposure beam is <|psi|^2>, averaged over realizations."""
+  grid = SimulationConfig(
+    nx=32, ny=32, dx=0.1, dy=0.1, dz=0.1, nz=4, wavelength=1.0
+  )
+  fields = _displaced_gaussians(grid, jnp.array([-0.3, 0.0, 0.5]))
+
+  mean = diagnostics.long_exposure_intensity(fields)
+
+  assert mean.shape == (32, 32)
+  assert jnp.allclose(mean, jnp.mean(jnp.abs(fields)**2, axis=0), atol=1e-14)
+
+
+def test_beam_wander_recovers_a_known_displacement(x64):
+  """Wander of beams displaced by known offsets is the spread of the offsets.
+
+  The centroid of realization n sits at its own displacement, so the standard
+  deviation across realizations must reproduce std(offsets) exactly.
+  """
+  grid = SimulationConfig(
+    nx=128, ny=128, dx=0.05, dy=0.05, dz=0.1, nz=4, wavelength=1.0
+  )
+  offsets = jnp.array([-0.4, -0.15, 0.0, 0.2, 0.35])
+  fields = _displaced_gaussians(grid, offsets)
+
+  wander_x, wander_y = diagnostics.beam_wander(fields, grid)
+
+  assert float(wander_x) == pytest.approx(float(jnp.std(offsets)), rel=1e-6)
+  # Nothing was displaced along y.
+  assert float(wander_y) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_long_exposure_is_broader_than_short_exposure(x64):
+  """Displacement widens the average beam by the law of total variance.
+
+  Each realization has second moment w0^2 / 4; displacing them adds the
+  variance of the displacements, so the long-exposure D4-sigma width is
+  4 * sqrt(w0^2 / 4 + var(offsets)) while the short-exposure width stays at
+  2 * w0. This pins the sign of the effect and its magnitude.
+  """
+  grid = SimulationConfig(
+    nx=256, ny=256, dx=0.04, dy=0.04, dz=0.1, nz=4, wavelength=1.0
+  )
+  w0 = 1.0
+  offsets = jnp.array([-0.6, -0.3, 0.0, 0.3, 0.6])
+  fields = _displaced_gaussians(grid, offsets, w0=w0)
+
+  stats = diagnostics.ensemble_statistics(fields, grid)
+  variance = float(jnp.var(offsets))
+
+  assert float(stats['short_exposure_width_x']) == pytest.approx(
+    2 * w0, rel=1e-4
+  )
+  assert float(stats['long_exposure_width_x']) == pytest.approx(
+    4 * jnp.sqrt(w0**2 / 4 + variance), rel=1e-3
+  )
+  assert stats['long_exposure_width_x'] > stats['short_exposure_width_x']
+
+
+def test_mutual_coherence_of_a_deterministic_ensemble_is_one(x64):
+  """Identical realizations are perfectly coherent everywhere."""
+  grid = SimulationConfig(
+    nx=32, ny=32, dx=0.1, dy=0.1, dz=0.1, nz=4, wavelength=1.0
+  )
+  one = gaussian_beam(grid, w0=1.0)
+  fields = jnp.stack([one] * 6)
+
+  mu = diagnostics.mutual_coherence(fields)
+
+  assert jnp.allclose(mu, 1.0, atol=1e-10)
+  assert jnp.isinf(diagnostics.coherence_radius(fields, grid))
+
+
+def test_mutual_coherence_decays_for_independent_phases(x64):
+  """Independent random phase per point destroys coherence off the peak.
+
+  The reference point stays at 1 by construction; every other point averages
+  an independent unit phasor over the ensemble and so decays as
+  1 / sqrt(n_realizations).
+  """
+  grid = SimulationConfig(
+    nx=16, ny=16, dx=0.1, dy=0.1, dz=0.1, nz=4, wavelength=1.0
+  )
+  n_realizations = 400
+  key = jax.random.PRNGKey(0)
+  phases = jax.random.uniform(
+    key, (n_realizations, grid.nx, grid.ny), maxval=2 * jnp.pi
+  )
+  fields = jnp.exp(1j * phases)
+
+  mu = diagnostics.mutual_coherence(fields)
+  index_x, index_y = jnp.unravel_index(
+    jnp.argmax(jnp.mean(jnp.abs(fields)**2, axis=0)), (grid.nx, grid.ny)
+  )
+
+  assert float(mu[index_x, index_y]) == pytest.approx(1.0, rel=1e-10)
+  off_peak = jnp.delete(mu.ravel(), index_x * grid.ny + index_y)
+  # Mean |mu| off the peak is of order 1 / sqrt(N) ~ 0.05, not order 1.
+  assert float(jnp.mean(off_peak)) < 10 / jnp.sqrt(n_realizations)
+  # The decorrelation is resolved at the first neighbouring cell.
+  assert float(diagnostics.coherence_radius(fields, grid)) == pytest.approx(
+    grid.dx, rel=1e-6
+  )
+
+
+def test_on_axis_scintillation_index_of_speckle_is_one(x64):
+  """Fully developed speckle has a unit scintillation index on axis.
+
+  Circular complex Gaussian field amplitude gives exponentially distributed
+  intensity, for which <I^2> / <I>^2 = 2.
+  """
+  grid = SimulationConfig(
+    nx=8, ny=8, dx=0.1, dy=0.1, dz=0.1, nz=4, wavelength=1.0
+  )
+  key = jax.random.PRNGKey(1)
+  real, imaginary = jax.random.normal(key, (2, 20000, grid.nx, grid.ny))
+  fields = (real + 1j * imaginary) / jnp.sqrt(2)
+
+  stats = diagnostics.ensemble_statistics(fields, grid)
+
+  assert float(stats['on_axis_scintillation_index']) == pytest.approx(
+    1.0, rel=0.1
+  )
+
+
+def test_ensemble_statistics_returns_every_documented_key(x64):
+  """The bundle's contract: scalars are scalars and maps are maps."""
+  grid = SimulationConfig(
+    nx=32, ny=32, dx=0.1, dy=0.1, dz=0.1, nz=4, wavelength=1.0
+  )
+  fields = _displaced_gaussians(grid, jnp.array([-0.2, 0.0, 0.3, 0.1]))
+
+  stats = diagnostics.ensemble_statistics(fields, grid)
+
+  scalars = (
+    'on_axis_scintillation_index', 'wander_x', 'wander_y', 'coherence_radius',
+    'long_exposure_width_x', 'long_exposure_width_y',
+    'short_exposure_width_x', 'short_exposure_width_y',
+  )
+  maps = ('mean_intensity', 'scintillation_index')
+  assert set(stats) == set(scalars) | set(maps)
+  for name in scalars:
+    assert jnp.ndim(stats[name]) == 0, name
+  for name in maps:
+    assert stats[name].shape == (32, 32), name
+
+
+def test_ensemble_statistics_is_jittable(x64):
+  """The bundle compiles, so it can be evaluated inside a traced function.
+
+  Uses a grid wide enough for the w0 = 1 beam to decay before the boundary;
+  on a narrower one, truncation biases the centroid and the wander check
+  below would be measuring the grid rather than the displacement.
+  """
+  grid = SimulationConfig(
+    nx=128, ny=128, dx=0.05, dy=0.05, dz=0.1, nz=4, wavelength=1.0
+  )
+  fields = _displaced_gaussians(grid, jnp.array([-0.2, 0.0, 0.3]))
+
+  compiled = jax.jit(lambda f: diagnostics.ensemble_statistics(f, grid))
+  stats = compiled(fields)
+
+  assert float(stats['wander_x']) == pytest.approx(
+    float(jnp.std(jnp.array([-0.2, 0.0, 0.3]))), rel=1e-6
+  )
