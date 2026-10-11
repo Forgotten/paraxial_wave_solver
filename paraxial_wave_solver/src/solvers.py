@@ -57,7 +57,7 @@ from .operators import (
 from .pml import generate_pml_profile
 
 # A refractive index perturbation callable: (z, medium) -> delta_n. The return
-# value must broadcast against an (nx, ny) field; a scalar is fine for a
+# value must broadcast against an (nx, ny) field; a scalar suffices for a
 # homogeneous medium.
 DeltaNFn = Callable[[Any, Any], Any]
 
@@ -449,7 +449,7 @@ def _propagate(
   sqrt(nz) steps per group, reverse-mode memory grows as sqrt(nz) rather than
   linearly, at the cost of one extra forward pass.
 
-  Rematerializing the group rather than the single step is what buys the
+  Rematerializing the group rather than the single step is what changes the
   square-root behaviour. Per-step rematerialization also reduces memory - by
   a constant factor of about seven here - but the scan still has to store the
   state entering every step, so the growth stays linear in nz.
@@ -695,9 +695,9 @@ class ParaxialWaveSolver:
                   sqrt(nz), so reverse-mode memory grows as sqrt(nz) instead
                   of linearly: for a Kerr run at nz=1600 the compiled
                   temporary drops from 236 MB to 7.3 MB. It costs one extra
-                  forward pass through each group, and nothing at all when no
-                  gradient is taken, which is why it defaults to on. Turn it
-                  off only to benchmark against it.
+                  forward pass through each group, and nothing when no
+                  gradient is taken, which is why it is enabled by default.
+                  Disable it only to benchmark against it.
       operators: Optional replacement for the precomputed operator arrays,
                  as returned by `build_operators`. Supplying operators built
                  from traced parameters is how gradients are taken with
@@ -706,11 +706,11 @@ class ParaxialWaveSolver:
       donate_psi_0: Hand the input buffer to XLA to reuse for the output.
                     **This destroys psi_0**: after the call it is deleted and
                     reading it raises. Off by default for that reason, and
-                    worth only one field - roughly 2 MB on a 512x512 complex64
-                    grid. It is not a way to reclaim the medium, which has no
-                    output of matching shape and so cannot be donated at all.
-                    Reach for `checkpoint` or `phase_screen` first; both save
-                    orders of magnitude more.
+                    the saving is one field - approximately 2 MB on a
+                    512x512 complex64 grid. It is not a means of reclaiming the
+                    medium, which has no output of matching shape and so cannot
+                    be donated at all. `checkpoint` and `phase_screen` should
+                    be preferred; both save orders of magnitude more.
 
     Returns:
       A tuple (psi_final, history) where psi_final is the field at

@@ -25,8 +25,13 @@ atmospheric or underwater turbulence.
   splitting and 2/3-rule dealiasing — all opt-in, with defaults unchanged.
 - **Diagnostics.** Power, centroid, D4-sigma widths, M², Strehl, mode overlap,
   scintillation and encircled power — computable inside the propagation loop.
+- **Monte-Carlo ensembles.** `ensemble_solve` propagates many realizations of a
+  random medium at once, vectorized within chunks so that peak memory is set by
+  the chunk rather than by the ensemble, with ensemble statistics and bootstrap
+  error bars alongside.
 - **Differentiable.** `jax.grad` runs through `solve` end to end, with
-  square-root checkpointing so reverse mode stays affordable at large `nz`.
+  square-root checkpointing, so that reverse mode remains tractable at large
+  `nz`.
 - **Typed and linted.** Type hints throughout; `ruff` clean.
 
 ## Installation
@@ -37,7 +42,7 @@ cd paraxial_wave_solver
 pip install -e .
 ```
 
-An editable install is what the examples expect. For the test and lint tooling:
+The examples assume an editable install. For the test and lint tooling:
 
 ```bash
 pip install -e ".[dev]"
@@ -69,7 +74,7 @@ at `z_0 + j * save_every * dz`, so index `0` is `psi_0` itself.
 Every method in this package integrates the same quantity: the slowly varying
 **envelope** $\psi$, not the physical field. This section states exactly what
 $\psi$ is and exactly what equation it obeys, because both conventions below
-are easy to get wrong and neither is guessable from the API.
+are frequently misapplied and neither can be inferred from the API.
 
 ### Derivation
 
@@ -217,7 +222,7 @@ running backwards.
 right-hand side above, with $\mathcal{L}_\perp$ a finite-difference stencil or
 the spectral Laplacian.
 
-### Two conventions to keep straight
+### Two conventions
 
 **The solver propagates an envelope, not the field.** $E = \psi e^{ikz}$ with
 $k = 2\pi n_0/\lambda$. Analytical beams return the full field by default; pass
@@ -227,9 +232,8 @@ $k = 2\pi n_0/\lambda$. Analytical beams return the full field by default; pass
 must return $\delta n = n - n_0$, so **vacuum is zero, not one**. Omit
 `delta_n_fn` entirely and the solver treats the domain as vacuum and drops the
 refraction term altogether. Returning $1$ for vacuum injects a spurious
-$e^{i k_0 L_z}$, which stays invisible whenever $k_0 L_z$ happens to be a
-multiple of $2\pi$ — as it is for `wavelength=1.0` with an integer propagation
-distance.
+$e^{i k_0 L_z}$, which remains undetected whenever $k_0 L_z$ is a multiple of
+$2\pi$, as it is for `wavelength=1.0` with an integer propagation distance.
 
 ## Choosing a solver
 
@@ -245,11 +249,12 @@ Gaussian in vacuum:
 | `finite_difference` | `rk4`, `fd_order=6` | 1.9e-06 | 2000 ms | |
 | `finite_difference` | `rk4`, `compact=True` | 2.6e-04 | 535 ms | 2nd order, more isotropic |
 
-**Use `spectral` + `split_step` unless you have a reason not to.** It is roughly
-four times faster than the next option and has no step-size restriction. Reach
-for `rk4` when the extra order in `z` matters more than the runtime, and for
-`finite_difference` when you need a local operator — for instance to use complex
-coordinate stretching in the PML, which the spectral method cannot.
+**`spectral` with `split_step` is the recommended default.** It is roughly four
+times faster than the next alternative and carries no step-size restriction.
+Use `rk4` where the additional order in `z` outweighs the increased runtime,
+and `finite_difference` where a local operator is required, for example to
+employ complex coordinate stretching in the PML, which the spectral method
+does not admit.
 
 Two combinations are rejected at construction rather than silently substituted:
 `split_step` requires `method='spectral'`, and `compact=True` requires
@@ -259,8 +264,8 @@ Two combinations are rejected at construction rather than silently substituted:
 
 The paraxial diffraction operator is purely imaginary, so **RK4 is stable only
 while `|lambda| * dz` stays within about 2.83**, where `lambda` is the largest
-eigenvalue of the discrete Laplacian divided by `2 * k0 * n0`. Exceeding it makes
-the solution diverge. The solver checks this on construction and warns with the
+eigenvalue of the discrete Laplacian divided by `2 * k0 * n0`. Exceeding it causes
+the solution to diverge. The solver checks this on construction and warns with the
 maximum stable `dz`:
 
 ```
@@ -289,7 +294,7 @@ it conserves power exactly.
 sim_config = pws.SimulationConfig(..., n2=0.02)
 ```
 
-Above the critical power the nonlinear lens beats diffraction and the beam
+Above the critical power the nonlinear lens overcomes diffraction and the beam
 self-focuses. `examples/kerr_self_focusing.py` sweeps through that threshold.
 
 ### Absorption and gain
@@ -307,10 +312,10 @@ solver = pws.ParaxialWaveSolver(
 ### Higher-order splitting
 
 `splitting_order=4` uses a Yoshida composition of three Strang sub-steps, the
-middle one running backwards. It costs three times as much per step, so it pays
-off once the step size is small enough to be in the asymptotic regime — past
-that point it wins comfortably at equal cost. Measured through a strongly
-refracting medium over `lz=20`:
+middle one running backwards. It costs three times as much per step and
+therefore becomes advantageous once the step size is small enough to lie in the
+asymptotic regime, beyond which it is substantially more accurate at equal
+cost. Measured through a strongly refracting medium over `lz=20`:
 
 | steps | Strang (order 2) | Yoshida (order 4) |
 |---|---|---|
@@ -348,7 +353,7 @@ difference only matters for tightly focused beams:
 wavenumber axis. A cubic nonlinearity spreads energy to three times its input
 wavenumber, and anything past Nyquist folds back onto the grid as spurious
 low-frequency structure. The mask folds into the precomputed propagator, so it
-costs nothing per step. Worth enabling whenever `n2` is non-zero.
+costs nothing per step. Enabling it is advisable whenever `n2` is non-zero.
 
 ## Usage
 
@@ -407,8 +412,8 @@ def delta_n_fn(z, medium):
 solver.solve(psi_0, medium=jax.random.PRNGKey(0))
 ```
 
-`fold_in` gives a reproducible screen per step without splitting `nz` keys up
-front, and it traces, so the step index can be a tracer.
+`fold_in` yields a reproducible screen per step without splitting `nz` keys in
+advance, and it is traceable, so the step index may itself be a tracer.
 
 This reproduces a slice of `random_medium` in the transverse plane — same
 variance, same correlation length — because integrating the 3D spectrum over
@@ -422,8 +427,81 @@ limit. Measured lag-one correlation:
 | transverse | 0.986 | 0.984 |
 | longitudinal | 0.983 | **0.000** |
 
-Use screens when the step already exceeds the longitudinal correlation length,
-which is the usual case; generate the volume when it does not.
+Screens are appropriate when the step already exceeds the longitudinal
+correlation length, which is the typical case; generate the volume otherwise.
+
+### Turbulence ensembles
+
+A single propagation through a random medium is one realization and carries no
+statistical meaning in isolation: the speckle pattern it produces is a property
+of that particular draw of the medium. The quantities of physical interest are
+moments over the ensemble, and `ensemble_solve` estimates them by propagating
+many realizations together:
+
+```python
+keys = jax.random.split(jax.random.PRNGKey(0), 512)
+fields, _ = pws.ensemble_solve(solver, psi_0, keys, chunk_size=64)
+statistics = pws.ensemble_statistics(fields, sim_config)
+```
+
+`fields` has shape `(n_realizations, nx, ny)`. `chunk_size` is a memory control
+rather than a physical parameter: the driver applies `vmap` within a chunk and
+`lax.map` across chunks, so peak scratch memory is set by the chunk. Measured
+as compiled temporary memory on a 64×64 grid at `chunk_size=2`:
+
+| realizations | chunked | plain `vmap` |
+|---|---|---|
+| 4 | 232 kB | 297 kB |
+| 8 | 232 kB | 559 kB |
+| 16 | 232 kB | 1083 kB |
+| 32 | **232 kB** | **2132 kB** |
+
+The chunked driver is flat in the ensemble size where a plain `vmap` grows
+linearly with it, which is what makes ensembles of a realistic size feasible.
+
+`ensemble_statistics` returns the long-exposure intensity, the pointwise and
+on-axis scintillation indices, beam wander, the coherence radius, and both the
+long- and short-exposure widths. The two widths quantify the central effect of
+an ensemble average: wander displaces the instantaneous pattern between
+realizations, which the average records as a broadening.
+
+#### How many realizations are required
+
+`ensemble_standard_error` bootstraps the realization axis, which is the only
+reliable way to answer this, because the answer depends strongly on the
+statistic. Measured relative standard error at 512 realizations:
+
+| statistic | weak | moderate |
+|---|---|---|
+| beam wander | 3.1% | 3.1% |
+| on-axis $\sigma_I^2$ | 6.2% | 8.7% |
+
+Both converge as the inverse square root of the ensemble size, but with
+different prefactors: the scintillation index is a ratio of fourth to second
+intensity moments and inherits the heavy tail of a near-exponential intensity
+distribution. Since the error falls as $N^{-1/2}$, closing that factor of two
+to three costs four to nine times as many realizations. The scintillation index
+is additionally biased low at small ensemble size, so a short run reports a
+value that is wrong rather than one that is visibly noisy.
+
+#### Spatial resolution is a precondition
+
+Scintillation statistics are meaningless when the speckle they describe is not
+resolved by the transverse grid. The relevant diagnostic is the measured
+coherence radius in units of `dx`; below roughly three cells the scintillation
+index is a discretization artefact. Measured at a fixed physical domain, with a
+perturbation strong enough to saturate:
+
+| `nx` | `dx` | coherence radius / `dx` | $\sigma_I^2$ |
+|---|---|---|---|
+| 128 | 0.200 mm | 1.41 | 7.76 |
+| 192 | 0.133 mm | 2.00 | 6.30 |
+| 256 | 0.100 mm | 2.83 | 5.29 |
+
+The index falls by 32% across that refinement and has not converged at any of
+the three resolutions. Verify the coherence radius against `dx` before
+reporting a scintillation index; `examples/turbulence_ensemble.py` prints the
+ratio for this reason.
 
 ### Controlling memory
 
@@ -436,14 +514,14 @@ psi_final, _ = solver.solve(psi_0, return_history=False)  # nothing allocated
 ```
 
 `save_every` must divide `nz`. It reduces what is allocated rather than
-allocating everything and slicing, and skipping the history entirely is also the
-fastest path — about 1.4× quicker than keeping all of it.
+allocating everything and slicing. Omitting the history entirely is also the
+fastest path, approximately 1.4 times faster than retaining it in full.
 
 ### Absorbing boundaries
 
 `PMLConfig(width_x, width_y, strength)` sets the layer depth in grid points and
-the peak absorption. Strength wants tuning: too weak and the boundary transmits,
-too strong and the layer itself reflects. Interior residual for a beam driven
+the peak absorption. The strength requires tuning: too weak and the boundary
+transmits, too strong and the layer itself reflects. Interior residual for a beam driven
 into the boundary, against a reference domain twice as wide:
 
 | `strength` | 0.0 | 0.5 | 2.0 | **4.0** | 8.0 |
@@ -456,7 +534,7 @@ solvers only; the spectral method falls back to the absorbing potential.
 
 ### Diagnostics
 
-`paraxial_wave_solver.src.diagnostics` provides the usual beam measures, all
+`paraxial_wave_solver.src.diagnostics` provides the standard beam measures, all
 pure functions of a field. Moments follow the ISO 11146 definitions: widths are
 D4-sigma, and `m_squared` uses the full space-frequency covariance including the
 position–wavenumber cross term, so it is a propagation invariant rather than
@@ -471,7 +549,11 @@ growing away from the waist.
 | `strehl_ratio`, `overlap` | Comparison against a reference field |
 | `encircled_power` | Power fraction inside a radius |
 | `ensemble_scintillation_index` | Pointwise index across a stack of runs |
+| `long_exposure_intensity` | Ensemble-averaged intensity |
+| `beam_wander` | Spread of the centroid across realizations |
+| `mutual_coherence`, `coherence_radius` | Field correlation about the peak |
 | `beam_diagnostics` | The common ones, as a dict |
+| `ensemble_statistics` | The ensemble ones, as a dict |
 
 Pass any of them to `solve` as `observable_fn` and they are evaluated inside the
 loop, so the history holds numbers rather than fields:
@@ -488,11 +570,12 @@ history['m2_x']        # shape (nz // save_every,)
 turbulence strengths this way, recording 10 kB of metrics in place of 105 MB of
 fields.
 
-Two caveats worth knowing. `strehl_ratio` is a ratio of peaks, so it can exceed
-1 for a speckled field where a random hot spot beats the unaberrated peak;
-`overlap` is the robust choice for tracking how much of a mode survives. And
-the spatial `scintillation_index` is dominated by dark background unless the
-beam fills the grid — pass a `mask` selecting the illuminated region.
+Two caveats apply. `strehl_ratio` is a ratio of peak values and may therefore
+exceed unity for a speckled field in which a random hot spot exceeds the
+unaberrated peak; `overlap` is the more robust measure of the fraction of a
+mode that survives. The spatial `scintillation_index` is dominated by the dark
+background unless the beam fills the grid, so a `mask` selecting the
+illuminated region should be supplied.
 
 ### Differentiation
 
@@ -528,21 +611,21 @@ def objective(n0):
     return beam_spread(psi)
 ```
 
-Constructing a whole new solver inside the traced function works too and gives
-the same gradient; `build_operators` is simply cheaper, since it reuses the
-PML profile and skips revalidation on every evaluation.
+Constructing an entirely new solver inside the traced function is also valid
+and yields the same gradient; `build_operators` is less expensive, since it
+reuses the PML profile and omits revalidation at every evaluation.
 
-Two conventions to know. JAX returns the **conjugate** cotangent for a real
-loss of a complex input, so the directional derivative pairs as
-`Re(grad * delta)`. And a *real* `delta_n` enters as a pure phase, so the total
-power is exactly insensitive to it — a gradient of zero there is correct, not a
-bug. Differentiate a quantity the medium can actually move, such as the beam
-radius or encircled power.
+Two conventions apply. JAX returns the **conjugate** cotangent for a real loss
+of a complex input, so the directional derivative pairs as `Re(grad * delta)`.
+A *real* `delta_n` enters as a pure phase, so the total power is exactly
+insensitive to it; a vanishing gradient is therefore correct rather than an
+error. Differentiate instead a quantity on which the medium acts, such as the
+beam radius or the encircled power.
 
 ### Checkpointing
 
-Reverse mode has to keep enough state to replay the propagation backwards,
-which is linear in `nz` if nothing is done about it. `solve` groups steps into
+Reverse mode must retain sufficient state to replay the propagation backwards,
+a requirement that is linear in `nz` in the absence of mitigation. `solve` groups steps into
 blocks of `sqrt(nz)` and rematerializes each group, so the cost grows as
 `sqrt(nz)` instead. Measured on a Kerr run at 64×64, as compiled temporary
 memory for one reverse pass:
@@ -555,34 +638,36 @@ memory for one reverse pass:
 
 The saving grows with `nz`, which is the signature of `sqrt(n)` against `n`:
 over that 16× range the unchecked run grows 15.9× and the checkpointed one
-3.9×, against the 4.0× that `sqrt` predicts. It costs one extra forward pass
-per group during a backward pass and nothing at all when no gradient is taken,
-so it defaults to on. Pass `checkpoint=False` to benchmark against it.
+3.9×, against the 4.0× that `sqrt` predicts. It costs one additional forward
+pass per group during a backward pass and nothing when no gradient is taken,
+and is therefore enabled by default. Pass `checkpoint=False` to benchmark
+against it.
 
-Per-step rematerialization — the more obvious choice — also helps, by a
-constant factor of about seven, but the scan still stores the state entering
-every step, so the growth stays linear. The grouping is what buys the change
-in scaling.
+Per-step rematerialization, the more immediate choice, also reduces the
+requirement, by a constant factor of approximately seven, but the scan still
+stores the state entering every step, so the growth remains linear. The
+grouping is what changes the scaling.
 
 ### Buffer donation
 
 `solve(..., donate_psi_0=True)` lets XLA reuse the input buffer for the output.
-It is off by default because **it destroys `psi_0`**: after the call the array
-is deleted and reading it raises. That matters in practice, since the input
-beam is usually also wanted for plotting or as the reference in an `overlap`.
+It is disabled by default because **it destroys `psi_0`**: after the call the
+array is deleted and reading it raises. This is consequential in practice,
+since the input beam is generally also required for plotting or as the
+reference in an `overlap`.
 
-Set expectations accordingly — this reclaims one field, about 2 MB on a
-512×512 complex64 grid. It is not a route to reclaiming the medium: XLA can
-only reuse an input buffer when some output has the same shape and dtype, and
-`solve` returns a field, so a `(nx, ny, nz)` volume has nothing to be reused
-for. Donating it is refused with a warning and silently does nothing.
+The saving is one field, approximately 2 MB on a 512×512 complex64 grid. It is
+not a route to reclaiming the medium: XLA can reuse an input buffer only when
+some output has the same shape and dtype, and `solve` returns a field, so an
+`(nx, ny, nz)` volume has no counterpart. Donation of such an array is refused
+with a warning and has no effect.
 
-For memory, reach for `checkpoint` and `phase_screen` first; both save orders
-of magnitude more than this does.
+For memory reduction, `checkpoint` and `phase_screen` should be preferred; both
+save orders of magnitude more.
 
 ### Precision
 
-JAX defaults to float32, which caps the achievable accuracy. Switch before
+JAX defaults to float32, which limits the achievable accuracy. Switch before
 creating any arrays:
 
 ```python
@@ -645,6 +730,19 @@ Returns `(psi_final, psi_history)`. `psi_history` is `None` when
 it finishes at `z_0 + nz * dz`; chaining runs by passing the previous end as the
 next `z_0` reproduces one long run exactly.
 
+### `ensemble_solve`
+
+```python
+ensemble_solve(solver, psi_0, keys, *, chunk_size=None, return_history=False,
+               **solve_kwargs)
+```
+
+Returns `(psi_final, history)` as `solve` does, with a leading realization axis
+prepended to every array. `return_history` defaults to `False` here, in
+contrast to `solve`, because an ensemble of histories is rarely wanted; pass an
+`observable_fn` to record diagnostics over `z` instead. `donate_psi_0` is
+rejected, since `psi_0` is shared across realizations.
+
 ### Beams
 
 `gaussian_beam`, `laguerre_gaussian_beam(p, l)` and
@@ -668,7 +766,9 @@ Run these after `pip install -e .`:
 | `kerr_self_focusing.py` | Self-focusing, dealiasing, and 2nd vs 4th order splitting |
 | `turbulence_diagnostics.py` | Beam quality vs turbulence strength, measured in-loop |
 | `adjoint_sensitivity.py` | Sensitivity maps and phase-mask inverse design, via `jax.grad` |
+| `turbulence_ensemble.py` | Monte-Carlo ensemble statistics with bootstrap error bars |
 | `demo.ipynb` | Notebook walkthrough of both solver families |
+| `turbulence_ensemble.ipynb` | Derivation and demonstration of ensemble statistics |
 
 ```bash
 python examples/simple_beam.py
@@ -684,13 +784,18 @@ paraxial_wave_solver/
 │   │   ├── config.py       # Configuration dataclasses and conventions
 │   │   ├── operators.py    # Laplacian operators
 │   │   ├── pml.py          # PML profile generation
-│   │   ├── diagnostics.py  # Beam quality measures
+│   │   ├── diagnostics.py  # Beam quality and ensemble measures
+│   │   ├── ensemble.py     # Chunked Monte-Carlo driver and bootstrap
 │   │   ├── solvers.py      # Propagation kernels and the solver
 │   │   └── utils.py        # Analytical beams and random media
 │   └── tests/
 │       ├── conftest.py
 │       ├── test_beams.py
+│       ├── test_diagnostics.py
+│       ├── test_ensemble.py
+│       ├── test_gradients.py
 │       ├── test_media.py
+│       ├── test_numerics.py
 │       ├── test_operators.py
 │       └── test_solvers.py
 ├── examples/
@@ -707,8 +812,7 @@ paraxial_wave_solver/
 pytest
 ```
 
-The suite is order-independent, so it can be parallelised — this is what CI
-runs:
+The suite is order-independent and may therefore be parallelised, as CI does:
 
 ```bash
 pytest -n auto
@@ -724,9 +828,9 @@ ruff check .
 
 `.github/workflows/ci.yml` runs `ruff` and then the suite on Python 3.10
 through 3.13. The matrix is deliberately wide: the dependency pins have no
-upper bound, so each interpreter resolves to a different JAX — 3.10 gets
-0.6.2 while 3.12 and 3.13 get 0.11.1 — and the workflow logs `pip list` so
-which one was used is always visible.
+upper bound, so each interpreter resolves to a different JAX version, 3.10 to
+0.6.2 and 3.12 and 3.13 to 0.11.1, and the workflow logs `pip list` so that
+the resolved version is always recorded.
 
 ## License
 
