@@ -32,7 +32,7 @@ def test_rejections_outputs_and_nonzero_origin(x64):
   np.testing.assert_array_equal(result.field, result.history[-1])
 
 
-@pytest.mark.parametrize('stepper', ['etdrk4', 'rk4', 'split_step',
+@pytest.mark.parametrize('stepper', ['etdrk4', 'rk4', 'magnus4', 'split_step',
                                     'crank_nicolson'])
 def test_tolerance_convergence_against_independent_ode(stepper, x64):
   obj = solver(stepper)

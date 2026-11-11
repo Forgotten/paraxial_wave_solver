@@ -9,6 +9,7 @@ atmospheric or underwater turbulence.
 
 ## Documentation
 
+- [Magnus-4 propagation](docs/magnus_integrators.md)
 - [Adaptive propagation](docs/adaptive_stepping.md)
 - [ETDRK4: fourth-order exponential propagation](docs/exponential_integrators.md)
 
@@ -489,6 +490,7 @@ interface. Existing default methods are unchanged.
 
 | Addition or correction | Behavior and how to use it |
 |---|---|
+| Magnus-4 | Set `stepper='magnus4'` for fourth-order linear paraxial propagation in smooth range-dependent media |
 | Adaptive stepping | Use `solve_adaptive` for local error control, exact output planes, and accepted/rejected step counts |
 | ETDRK4 | Set `stepper='etdrk4'` for fourth-order spectral paraxial propagation with explicit local physics |
 | Crank–Nicolson | Set `stepper='crank_nicolson'`; supports the linear paraxial equation with spectral or FD operators |
@@ -963,6 +965,7 @@ Run these after `pip install -e .`:
 
 | Script | What it does |
 |---|---|
+| `magnus_convergence.py` | Magnus-4 convergence against an independent ODE reference |
 | `adaptive_propagation.py` | Adaptive tolerance refinement against an analytic solution |
 | `etdrk4_convergence.py` | ETDRK4 and Strang step refinement against a dense matrix exponential |
 | [`etdrk4_convergence.ipynb`](examples/etdrk4_convergence.ipynb) | Executed notebook with error tables, convergence assertions, and a plot |

@@ -62,6 +62,7 @@ from .config import (
   SolverConfig,
 )
 from .exponential import etd_coefficients, make_etdrk4_kernel
+from .magnus import make_magnus_kernel
 from .operators import (
   get_spectral_k_grids,
   laplacian_fd,
@@ -586,8 +587,11 @@ class ParaxialWaveSolver:
         f"ny={sim_config.ny}; it must be smaller than ny / 2."
       )
 
-    if solver_config.stepper in ('crank_nicolson', 'pade') and sim_config.n2 != 0:
-      raise ValueError("Implicit linear steppers require n2=0.")
+    if (solver_config.stepper in ('crank_nicolson', 'pade', 'magnus4')
+        and sim_config.n2 != 0):
+      raise ValueError("Linear steppers require n2=0.")
+    if solver_config.stepper == 'magnus4' and pml_config.use_complex_stretching:
+      raise ValueError("Magnus currently supports local absorption, not stretching.")
     if solver_config.stepper == 'etdrk4' and pml_config.use_complex_stretching:
       raise ValueError("ETDRK4 supports the absorbing potential, not stretching.")
     if solver_config.stepper == 'pade':
@@ -640,7 +644,12 @@ class ParaxialWaveSolver:
       laplacian_fn = _make_laplacian_fn(
         solver_config, sim_config, use_stretch
       )
-      if solver_config.stepper == 'rk4':
+      if solver_config.stepper == 'magnus4':
+        self._step_fn = make_magnus_kernel(
+          laplacian_fn, delta_n_fn, has_pml,
+          solver_config.exponential_max_substeps,
+        )
+      elif solver_config.stepper == 'rk4':
         self._step_fn = _make_rk4_kernel(
           sim_config, laplacian_fn, delta_n_fn,
           has_pml and not use_stretch,
@@ -713,6 +722,14 @@ class ParaxialWaveSolver:
       if solver_config.stepper == 'etdrk4':
         symbol = -1j * (operators['kx']**2 + operators['ky']**2) / (2*k0*n0)
         operators['etd'] = etd_coefficients(symbol, dz)
+      if solver_config.stepper == 'magnus4':
+        if solver_config.method == 'spectral':
+          bound = jnp.max(operators['kx']**2 + operators['ky']**2)
+        else:
+          delta = jnp.zeros((sim_config.nx, sim_config.ny)).at[0, 0].set(1)
+          reference = _make_laplacian_fn(solver_config, sim_config, False)
+          bound = jnp.sum(jnp.abs(reference(delta, {})))
+        operators['laplacian_bound'] = bound
       if solver_config.stepper in ('crank_nicolson', 'pade'):
         # The periodic constant-coefficient reference is diagonal in Fourier
         # space even for FD. Applying its stencil to a delta computes exactly

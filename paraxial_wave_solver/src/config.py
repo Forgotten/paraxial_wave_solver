@@ -184,7 +184,9 @@ class SolverConfig:
               Ignored when method is 'spectral' or when compact is True.
     compact: Use the isotropic compact 9-point stencil. Requires
              method='finite_difference' and dx == dy.
-    stepper: 'rk4', 'split_step', 'crank_nicolson', 'pade', or 'etdrk4'.
+    stepper: 'rk4', 'split_step', 'crank_nicolson', 'pade', 'etdrk4',
+             or 'magnus4'. Magnus requires linear paraxial physics and uses
+             two Gauss-node samples with matrix-free exponential actions.
              ETDRK4 requires spectral paraxial diffraction and supports Kerr
              and complex index; local terms retain explicit stability limits.
              Split-step
@@ -215,6 +217,8 @@ class SolverConfig:
     pade_order: Degree of the rotated rational whole-step approximation, 1–6.
     pade_rotation: Branch rotation in radians, between zero and pi. Accuracy
                    depends on this value and the discrete operator spectrum.
+    exponential_max_substeps: Maximum scaled Taylor substeps per Magnus
+                              exponential action; insufficient capacity returns NaNs.
     linear_rtol: Required relative residual for implicit solves.
     linear_maxiter: Maximum GMRES restart cycles.
     linear_restart: Krylov dimension per cycle.
@@ -222,12 +226,15 @@ class SolverConfig:
   method: Literal['finite_difference', 'spectral']
   fd_order: int = 2
   compact: bool = False
-  stepper: Literal['rk4', 'split_step', 'crank_nicolson', 'pade', 'etdrk4'] = 'rk4'
+  stepper: Literal[
+    'rk4', 'split_step', 'crank_nicolson', 'pade', 'etdrk4', 'magnus4'
+  ] = 'rk4'
   splitting_order: int = 2
   propagator: Literal['paraxial', 'wide_angle', 'helmholtz'] = 'paraxial'
   dealias: bool = False
   pade_order: int = 4
   pade_rotation: float = math.pi / 6
+  exponential_max_substeps: int = 256
   linear_rtol: float = 1e-6
   linear_maxiter: int = 50
   linear_restart: int = 20
@@ -238,10 +245,11 @@ class SolverConfig:
         f"Unsupported method {self.method!r}; expected 'finite_difference' "
         "or 'spectral'."
       )
-    if self.stepper not in ('rk4', 'split_step', 'crank_nicolson', 'pade', 'etdrk4'):
+    if self.stepper not in ('rk4', 'split_step', 'crank_nicolson', 'pade',
+                            'etdrk4', 'magnus4'):
       raise ValueError(
         f"Unsupported stepper {self.stepper!r}; expected 'rk4' or "
-        "'split_step', 'crank_nicolson', 'pade' or 'etdrk4'."
+        "'split_step', 'crank_nicolson', 'pade', 'etdrk4' or 'magnus4'."
       )
     if self.stepper == 'etdrk4' and self.method != 'spectral':
       raise ValueError("stepper='etdrk4' requires method='spectral'.")
@@ -284,7 +292,7 @@ class SolverConfig:
       raise ValueError("pade_rotation must lie strictly between zero and pi.")
     if not 0 < self.linear_rtol < 1:
       raise ValueError("linear_rtol must lie strictly between zero and one.")
-    for name in ('linear_maxiter', 'linear_restart'):
+    for name in ('linear_maxiter', 'linear_restart', 'exponential_max_substeps'):
       if not isinstance(getattr(self, name), int) or getattr(self, name) < 1:
         raise ValueError(f"{name} must be a positive integer.")
     if self.stepper != 'split_step':

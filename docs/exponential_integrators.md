@@ -77,5 +77,5 @@ Tests additionally cover smooth range variation, Kerr with absorption and PML,
 phi functions against augmented matrix exponentials, vacuum propagation beyond
 the RK4 diffraction limit, gradients, batching, and callback coordinates.
 Adaptive step doubling is available through [solve_adaptive](adaptive_stepping.md).
-Magnus integrators remain future work; ETDRK4
+A linear [Magnus-4 integrator](magnus_integrators.md) is also available; ETDRK4
 uses fixed steps.

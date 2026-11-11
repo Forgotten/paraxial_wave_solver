@@ -25,7 +25,7 @@ assert result.z[-1] == 2.
 print(result.accepted, result.rejected)
 ```
 
-Supported methods are ETDRK4, RK4, Crank–Nicolson, and split-step without
+Supported methods are ETDRK4, RK4, Magnus-4, Crank–Nicolson, and split-step without
 dealias filtering. Kerr and absorbers follow the chosen method's restrictions;
 Yoshida with an outer absorber uses a second-order estimator. Local error
 control does not guarantee global error or stability. Smooth medium callbacks
