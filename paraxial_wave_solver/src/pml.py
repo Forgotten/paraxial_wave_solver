@@ -87,7 +87,7 @@ def _sigma_1d(
   l_pml = width_idx * d_step
   d_norm = d / l_pml
 
-  sigma = strength * d_norm**order
+  sigma = jnp.where(d > 0, strength * d_norm**order, 0.0)
 
   # d(d)/dx is -1 on the left layer, +1 on the right, 0 in the interior.
   grad_d = jnp.where(coord < start, -1.0, jnp.where(coord > end, 1.0, 0.0))

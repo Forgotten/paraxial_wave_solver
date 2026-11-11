@@ -10,20 +10,33 @@ where delta_n = n - n0 is the refractive index *perturbation*, n2 the Kerr
 coefficient and sigma the PML absorption profile. `config.py` carries the
 derivation from Helmholtz and the full set of conventions.
 
-Two families integrate it. The split-step kernel solves each half exactly in
-its own domain - diffraction as a Fourier multiplier, refraction and Kerr
-pointwise in real space - and alternates them:
+The split-step kernel solves each half exactly in its own domain: diffraction
+as a Fourier multiplier, refraction and Kerr pointwise in real space. It
+alternates them:
 
     psi <- N(dz/2) . D(dz) . N(dz/2) . psi
 
     D(h) = exp(-1j * h * k_perp**2 / (2*k))                    paraxial
          = exp( 1j * h * (sqrt(k**2 - k_perp**2) - k))         wide-angle
-    N(h) = exp( 1j * k0 * (delta_n + n2*|psi|**2) * h)
+    N(h) = exp( 1j * k0 * (delta_n + n2*|psi|**2) * h)  for real delta_n
 
-with the PML applied as exp(-sigma*dz/2) at each end of the full step, and
-`splitting_order=4` composing three such steps with Yoshida weights.
+For complex delta_n, the Kerr phase integrates the changing intensity exactly
+within each frozen-index substep.
+
+The PML is applied as exp(-sigma*dz/2) at each end of the full step.
+`splitting_order=4` composes three Strang steps with Yoshida weights; an outer
+PML split reduces the overall order to two.
 The RK4 kernel instead applies four-stage Runge-Kutta directly to the
 right-hand side, with L_perp a finite-difference stencil or the spectral Laplacian.
+
+ETDRK4 integrates homogeneous spectral diffraction exactly and applies four
+explicit stages to local refraction, Kerr, and absorption. Smooth problems
+have fourth-order longitudinal accuracy; local stability limits remain.
+
+The Crank–Nicolson kernel solves the linear paraxial equation implicitly. The
+experimental Padé kernel instead approximates exp(i*h*(sqrt(H)-k)), with
+H = L_perp + k0**2 * (n0 + delta_n)**2. It requires real index, no Kerr, and
+periodic boundaries without PML. Both freeze the index at the step midpoint.
 
 Everything that does not vary with z - the diffraction operators, the PML
 attenuation, the wavenumber grids - is built once in `ParaxialWaveSolver` and
@@ -48,6 +61,7 @@ from .config import (
   SimulationConfig,
   SolverConfig,
 )
+from .exponential import etd_coefficients, make_etdrk4_kernel
 from .operators import (
   get_spectral_k_grids,
   laplacian_fd,
@@ -55,6 +69,8 @@ from .operators import (
   laplacian_spectral,
 )
 from .pml import generate_pml_profile
+from .rational import pade_coefficients
+from .steppers import make_implicit_kernel
 
 # A refractive index perturbation callable: (z, medium) -> delta_n. The return
 # value must broadcast against an (nx, ny) field; a scalar suffices for a
@@ -188,8 +204,8 @@ def _dealias_mask(sim_config: SimulationConfig) -> Field:
 
   A cubic nonlinearity spreads energy to three times the wavenumber of its
   input, and anything past the Nyquist limit folds back onto the grid as
-  spurious low-frequency content. Zeroing the top third of each axis leaves no
-  aliased product inside the retained band.
+  spurious low-frequency content. This mask is a spectral filter, not exact
+  cubic dealiasing: subsequent nonlinear half-steps can repopulate the band.
 
   Args:
     sim_config: Simulation configuration.
@@ -243,7 +259,8 @@ def _diffraction_operator(
     kz = jnp.sqrt((k**2 - k_perp_squared).astype(
       jnp.result_type(k_perp_squared, jnp.complex64)
     ))
-    operator = jnp.exp(1j * step * (kz - k))
+    # Rationalization avoids catastrophic cancellation for optical wavelengths.
+    operator = jnp.exp(-1j * step * k_perp_squared / (kz + k))
   else:
     operator = jnp.exp(-1j * step * k_perp_squared / (2 * k))
 
@@ -309,22 +326,31 @@ def _make_split_step_kernel(
   Returns:
     A callable (psi, z, operators, medium) -> psi at z + dz.
   """
-  k0 = sim_config.k0
-  dz = sim_config.dz
   n2 = sim_config.n2
   kerr = n2 != 0.0
   has_potential = delta_n_fn is not None or kerr
 
-  def potential(psi: Field, z: Any, half_h: float, medium: Any) -> Any:
-    """exp(1j k0 (delta_n + n2 |psi|^2) * half_h) for one half sub-step."""
-    index = 0.0
-    if delta_n_fn is not None:
-      index = delta_n_fn(z, medium)
+  def potential(psi: Field, z: Any, half_h: Any, medium: Any,
+                k0: Any) -> Any:
+    """Exact frozen-index local flow, including Kerr with absorption/gain."""
+    index = 0.0 if delta_n_fn is None else delta_n_fn(z, medium)
+    phase = k0 * half_h * index
     if kerr:
-      index = index + n2 * jnp.abs(psi)**2
-    return jnp.exp((1j * k0 * half_h) * index)
+      # Intensity changes during a complex-index substep. Integrate it rather
+      # than freezing it in the Kerr phase. Both branches must remain finite
+      # because reverse mode differentiates through jnp.where.
+      t = -2 * k0 * jnp.imag(index) * half_h
+      small = jnp.abs(t) < 1e-4
+      denominator = jnp.where(small, 1.0, t)
+      integral = jnp.where(
+        small, 1 + t / 2 + t**2 / 6 + t**3 / 24,
+        jnp.expm1(t) / denominator,
+      )
+      phase = phase + k0 * n2 * jnp.abs(psi)**2 * half_h * integral
+    return jnp.exp(1j * phase)
 
   def step(psi: Field, z: Any, operators: Operators, medium: Any) -> Field:
+    k0, dz = operators['k0'], operators['dz']
     if has_pml:
       psi = psi * operators['pml_half']
 
@@ -336,7 +362,7 @@ def _make_split_step_kernel(
       z_mid = z + offset + half_h
 
       if has_potential:
-        first = potential(psi, z_mid, half_h, medium)
+        first = potential(psi, z_mid, half_h, medium, k0)
         psi = psi * first
 
       psi = jnp.fft.ifft2(jnp.fft.fft2(psi) * operators['linear'][index])
@@ -345,7 +371,8 @@ def _make_split_step_kernel(
         # The Kerr phase is intensity dependent, and diffraction has changed
         # the intensity, so the trailing half-step is re-evaluated. Without
         # Kerr the potential is unchanged and the first factor is reused.
-        second = potential(psi, z_mid, half_h, medium) if kerr else first
+        second = (potential(psi, z_mid, half_h, medium, k0)
+                  if kerr else first)
         psi = psi * second
 
       offset += sub_h
@@ -375,14 +402,13 @@ def _make_rk4_kernel(
   Returns:
     A callable (psi, z, operators, medium) -> psi at z + dz.
   """
-  k0 = sim_config.k0
-  dz = sim_config.dz
   n2 = sim_config.n2
   kerr = n2 != 0.0
-  diffraction_coeff = 1j / (2 * k0 * sim_config.n0)
 
   def rhs(psi: Field, z: Any, operators: Operators, medium: Any) -> Field:
-    out = diffraction_coeff * laplacian_fn(psi, operators)
+    k0 = operators['k0']
+    coefficient = 1j / (2 * k0 * operators['n0'])
+    out = coefficient * laplacian_fn(psi, operators)
     if delta_n_fn is not None:
       out = out + (1j * k0) * delta_n_fn(z, medium) * psi
     if kerr:
@@ -392,6 +418,7 @@ def _make_rk4_kernel(
     return out
 
   def step(psi: Field, z: Any, operators: Operators, medium: Any) -> Field:
+    dz = operators['dz']
     k1 = rhs(psi, z, operators, medium)
     k2 = rhs(psi + 0.5 * dz * k1, z + 0.5 * dz, operators, medium)
     k3 = rhs(psi + 0.5 * dz * k2, z + 0.5 * dz, operators, medium)
@@ -410,7 +437,8 @@ def checkpoint_group_size(nz: int, save_every: int) -> int:
   trade: sqrt(nz) stored states and one extra forward pass.
 
   The group must be a whole number of save blocks and must divide nz, so the
-  ideal sqrt(nz) is rounded to the nearest admissible divisor.
+  ideal sqrt(nz) is rounded to the nearest admissible divisor. Prime nz with
+  save_every=1 selects one step and does not achieve square-root memory scaling.
 
   Args:
     nz: Total number of propagation steps.
@@ -558,6 +586,19 @@ class ParaxialWaveSolver:
         f"ny={sim_config.ny}; it must be smaller than ny / 2."
       )
 
+    if solver_config.stepper in ('crank_nicolson', 'pade') and sim_config.n2 != 0:
+      raise ValueError("Implicit linear steppers require n2=0.")
+    if solver_config.stepper == 'etdrk4' and pml_config.use_complex_stretching:
+      raise ValueError("ETDRK4 supports the absorbing potential, not stretching.")
+    if solver_config.stepper == 'pade':
+      if not jax.config.jax_enable_x64:
+        raise ValueError("Padé propagation requires enable_x64() before construction.")
+      if (pml_config.strength > 0
+          and (pml_config.width_x or pml_config.width_y)):
+        raise ValueError("Padé propagation currently requires no PML.")
+      if pml_config.use_complex_stretching:
+        raise ValueError("Padé propagation does not support complex stretching.")
+
     _warn_if_unstable(solver_config, sim_config)
 
     self.sim_config = sim_config
@@ -577,12 +618,20 @@ class ParaxialWaveSolver:
       pml_config.strength > 0.0
     )
 
+    if has_pml and solver_config.splitting_order == 4:
+      warnings.warn(
+        "The absorbing potential around the Yoshida composition reduces "
+        "the overall splitting order to two.", RuntimeWarning, stacklevel=2,
+      )
+
     self.pml_profile = pml_data.sigma
     self._pml_data = pml_data
     self._has_pml = has_pml
     self._use_stretch = use_stretch
 
-    if solver_config.stepper == 'split_step':
+    if solver_config.stepper == 'etdrk4':
+      self._step_fn = make_etdrk4_kernel(sim_config.n2, delta_n_fn, has_pml)
+    elif solver_config.stepper == 'split_step':
       self._step_fn = _make_split_step_kernel(
         sim_config, delta_n_fn, has_pml,
         splitting_weights(solver_config.splitting_order),
@@ -591,10 +640,15 @@ class ParaxialWaveSolver:
       laplacian_fn = _make_laplacian_fn(
         solver_config, sim_config, use_stretch
       )
-      self._step_fn = _make_rk4_kernel(
-        sim_config, laplacian_fn, delta_n_fn,
-        has_pml and not use_stretch,
-      )
+      if solver_config.stepper == 'rk4':
+        self._step_fn = _make_rk4_kernel(
+          sim_config, laplacian_fn, delta_n_fn,
+          has_pml and not use_stretch,
+        )
+      else:
+        self._step_fn = make_implicit_kernel(
+          solver_config, laplacian_fn, delta_n_fn, has_pml and not use_stretch,
+        )
 
     self._operators = self.build_operators()
 
@@ -630,7 +684,7 @@ class ParaxialWaveSolver:
     n0 = params.get('n0', sim_config.n0)
     dz = params.get('dz', sim_config.dz)
 
-    operators: Operators = {}
+    operators: Operators = {'k0': k0, 'n0': n0, 'dz': dz}
     if solver_config.stepper == 'split_step':
       kx, ky = get_spectral_k_grids(
         sim_config.nx, sim_config.ny, sim_config.dx, sim_config.dy
@@ -656,6 +710,30 @@ class ParaxialWaveSolver:
         operators['stretch'] = self._pml_data.stretch.as_dict()
       if self._has_pml and not self._use_stretch:
         operators['sigma'] = self._pml_data.sigma
+      if solver_config.stepper == 'etdrk4':
+        symbol = -1j * (operators['kx']**2 + operators['ky']**2) / (2*k0*n0)
+        operators['etd'] = etd_coefficients(symbol, dz)
+      if solver_config.stepper in ('crank_nicolson', 'pade'):
+        # The periodic constant-coefficient reference is diagonal in Fourier
+        # space even for FD. Applying its stencil to a delta computes exactly
+        # the symbol of the configured stencil, including the nine-point one.
+        if solver_config.method == 'spectral':
+          symbol = -(operators['kx']**2 + operators['ky']**2)
+        else:
+          delta = jnp.zeros((sim_config.nx, sim_config.ny)).at[0, 0].set(1)
+          reference = _make_laplacian_fn(solver_config, sim_config, False)
+          symbol = jnp.fft.fft2(reference(delta, {})).real
+        k = k0 * n0
+        if solver_config.stepper == 'crank_nicolson':
+          denominator = 1 - (0.25j * dz / k) * symbol
+        else:
+          numerator, coefficients = pade_coefficients(
+            dz * k, solver_config.pade_order, solver_config.pade_rotation,
+          )
+          operators['pade_num'], operators['pade_den'] = numerator, coefficients
+          y = jnp.exp(-1j * solver_config.pade_rotation) * (1 + symbol / k**2) - 1
+          denominator = jnp.polyval(coefficients[::-1], y)
+        operators['inverse_reference'] = 1 / denominator
     return operators
 
   def solve(
@@ -692,14 +770,19 @@ class ParaxialWaveSolver:
                      `paraxial_wave_solver.src.diagnostics`.
       checkpoint: Rematerialize groups of steps during a backward pass rather
                   than storing every intermediate. Groups are sized at
-                  sqrt(nz), so reverse-mode memory grows as sqrt(nz) instead
-                  of linearly: for a Kerr run at nz=1600 the compiled
-                  temporary drops from 236 MB to 7.3 MB. It costs one extra
+                  a divisor near sqrt(nz), when one is available. Prime nz
+                  with save_every=1 falls back to one-step groups, so the
+                  square-root memory saving is not guaranteed. In a measured
+                  Kerr run at nz=1600 the compiled temporary dropped from
+                  236 MB to 7.3 MB. It costs one extra
                   forward pass through each group, and nothing when no
                   gradient is taken, which is why it is enabled by default.
                   Disable it only to benchmark against it.
-      operators: Optional replacement for the precomputed operator arrays,
-                 as returned by `build_operators`. Supplying operators built
+      operators: Optional replacement for the precomputed operator arrays.
+                 Its dz also sets the propagation coordinates and final plane;
+                 medium callbacks must use physical coordinates independently
+                 of the original configuration when dz is overridden. Use
+                 the result of `build_operators`. Supplying operators built
                  from traced parameters is how gradients are taken with
                  respect to physical constants such as n0 or the wavelength,
                  which are otherwise fixed when the solver is constructed.
@@ -724,10 +807,10 @@ class ParaxialWaveSolver:
       psi_final directly if its value there is needed.
 
     Raises:
-      ValueError: If save_every is not a positive divisor of nz.
+      ValueError: If save_every is not a positive integer divisor of nz.
     """
     nz = self.sim_config.nz
-    if save_every < 1:
+    if not isinstance(save_every, int) or save_every < 1:
       raise ValueError(f"save_every must be positive, got {save_every}.")
     if nz % save_every:
       raise ValueError(
@@ -736,7 +819,8 @@ class ParaxialWaveSolver:
 
     # Exact dz spacing: linspace(z_0, lz, nz) would step by (lz - z_0)/(nz - 1)
     # and would ignore z_0 in the span entirely.
-    zs = z_0 + self.sim_config.dz * jnp.arange(nz)
+    operators = self._operators if operators is None else operators
+    zs = z_0 + operators['dz'] * jnp.arange(nz)
 
     # Three levels: groups of save blocks of steps. The group is the
     # rematerialization unit; sizing it at sqrt(nz) is what makes reverse-mode
@@ -749,7 +833,7 @@ class ParaxialWaveSolver:
     return propagate_fn(
       psi_0,
       z_grid,
-      self._operators if operators is None else operators,
+      operators,
       medium,
       step_fn=self._step_fn,
       return_history=return_history,

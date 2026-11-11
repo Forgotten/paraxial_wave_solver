@@ -7,14 +7,27 @@ A JAX-based numerical solver for the paraxial wave equation in 3D, with examples
 for optical beam propagation in vacuum and in inhomogeneous media such as
 atmospheric or underwater turbulence.
 
+## Documentation
+
+- [ETDRK4: fourth-order exponential propagation](docs/exponential_integrators.md)
+
+- [Solver capabilities and selection](#choosing-a-solver)
+- [Implicit solvers: runnable examples, accuracy, diagnostics, and gradients](docs/implicit_solvers.md)
+- [New functionality and numerical corrections](#new-functionality-and-numerical-corrections)
+- [API reference](#api-reference) and [examples](#examples)
+
 ## Features
 
 - **Modular design.** Simulation, solver and PML settings are frozen dataclasses,
   validated on construction.
 - **Fast.** The propagation loop is a JIT-compiled `jax.lax.scan`, and every
   z-independent operator is built once rather than per step.
-- **Multiple solvers.** Pseudo-spectral (split-step Fourier or RK4) and finite
-  difference at 2nd, 4th and 6th order, plus a compact isotropic 9-point stencil.
+- **Multiple solvers.** Pseudo-spectral (split-step Fourier, RK4, or Crank–Nicolson) and finite
+  difference at 2nd, 4th and 6th order, plus a second-order isotropic 9-point stencil.
+- **Experimental full-index propagation.** A rotated Padé approximation places
+  the heterogeneous index inside the one-way Helmholtz square root.
+- **Implicit linear algebra.** Matrix-free GMRES with FFT preconditioning,
+  explicit residual checks, and implicit differentiation.
 - **Absorbing boundaries.** Perfectly matched layers, as an absorbing potential
   or via complex coordinate stretching.
 - **Analytical beams.** Gaussian, Laguerre-Gaussian and Hermite-Gaussian modes,
@@ -22,7 +35,7 @@ atmospheric or underwater turbulence.
   distance.
 - **Beyond the linear paraxial problem.** Optional Kerr nonlinearity, complex
   refractive index for absorption and gain, a wide-angle propagator, 4th-order
-  splitting and 2/3-rule dealiasing — all opt-in, with defaults unchanged.
+  splitting and 2/3 spectral filtering — all opt-in, with defaults unchanged.
 - **Diagnostics.** Power, centroid, D4-sigma widths, M², Strehl, mode overlap,
   scintillation and encircled power — computable inside the propagation loop.
 - **Monte-Carlo ensembles.** `ensemble_solve` propagates many realizations of a
@@ -30,8 +43,8 @@ atmospheric or underwater turbulence.
   the chunk rather than by the ensemble, with ensemble statistics and bootstrap
   error bars alongside.
 - **Differentiable.** `jax.grad` runs through `solve` end to end, with
-  square-root checkpointing, so that reverse mode remains tractable at large
-  `nz`.
+  grouped checkpointing to reduce reverse-mode memory; the saving depends on
+  the available divisors of `nz` and the history stride.
 - **Typed and linted.** Type hints throughout; `ruff` clean.
 
 ## Installation
@@ -101,7 +114,8 @@ exact**:
   + k_0^2 \left( n^2 - n_0^2 \right) \psi = 0
 ```
 
-Two approximations turn this into what the solver integrates.
+Two approximations give the default paraxial equation. The square-root
+models described below use different diffraction generators.
 
 **1. The paraxial (slowly varying envelope) approximation** drops the second
 $z$-derivative, on the grounds that the envelope changes little over a
@@ -124,8 +138,7 @@ $\delta n \ll n_0$,
 n^2 - n_0^2 = 2 n_0\, \delta n + \delta n^2 \;\approx\; 2 n_0\, \delta n
 ```
 
-What remains, solved for the $z$-derivative, is the equation this package
-integrates:
+What remains, solved for the $z$-derivative, is the default paraxial equation:
 
 ```math
 \boxed{\;\frac{\partial \psi}{\partial z}
@@ -133,7 +146,7 @@ integrates:
   + i k_0\, \delta n\, \psi \;}
 ```
 
-### The full equation, with every optional term
+### The paraxial equation, with Kerr and absorption
 
 ```math
 \frac{\partial \psi}{\partial z}
@@ -171,7 +184,7 @@ power $\sum \lvert \psi \rvert^2$ is invariant. That is what
 
 ### Wide-angle: the approximation that is not made
 
-`propagator='wide_angle'` skips approximation 1. Rather than dropping the
+For a homogeneous medium, `propagator='wide_angle'` skips approximation 1. Rather than dropping the
 second $z$-derivative, it factors Helmholtz into forward- and
 backward-travelling parts and keeps the forward one:
 
@@ -195,6 +208,10 @@ operator is the leading term of the wide-angle one. Past the light line
 ($k_\perp \gt k$) the root turns imaginary and the multiplier decays, which is
 the correct treatment of evanescent components.
 
+With a heterogeneous medium, this option still splits the homogeneous root
+from the local `i*k0*delta_n` term; it does not put the index inside the root.
+The experimental `pade` method below implements that different model.
+
 ### What the steppers do with it
 
 **`split_step`** alternates the two halves of the equation, each solved exactly
@@ -213,7 +230,9 @@ where $\mathcal{D}$ applies $\widehat{D}$ above and
 \mathcal{N}(h) = \exp\left[ i k_0 \left( \delta n + n_2 \lvert \psi \rvert^2 \right) h \right]
 ```
 
-with the PML applied as $e^{-\sigma \Delta z / 2}$ at each end of the full
+For real index the expression above is exact. With complex index and Kerr,
+the implementation integrates the changing intensity in the nonlinear phase.
+The PML is applied as $e^{-\sigma \Delta z / 2}$ at each end of the full
 step. `splitting_order=4` composes three such steps with Yoshida weights
 $w_1 = \left( 2 - 2^{1/3} \right)^{-1}$ and $w_0 = 1 - 2 w_1$, the middle one
 running backwards.
@@ -237,12 +256,32 @@ $2\pi$, as it is for `wavelength=1.0` with an integer propagation distance.
 
 ## Choosing a solver
 
+Choose the physical model and boundary treatment first, then the stepper:
+
+| Stepper / propagator | Spatial methods | Index and nonlinearity | Boundary support | Accuracy and limits |
+|---|---|---|---|---|
+| `split_step` / `paraxial` | Spectral | Real/complex index; Kerr | Absorbing potential | Strang order 2; optional Yoshida order 4 for smooth media without the outer PML split |
+| `split_step` / `wide_angle` | Spectral | Local real/complex index; Kerr | Absorbing potential | Homogeneous exact root plus local refraction; order 2 only |
+| `etdrk4` / `paraxial` | Spectral | Real/complex index; Kerr | Absorbing potential | Order 4 for smooth problems; local terms remain explicit |
+| `rk4` / `paraxial` | Spectral or FD | Real/complex index; Kerr | Absorbing potential; FD stretching | Order 4 in z for smooth problems; conditional stability |
+| `crank_nicolson` / `paraxial` | Spectral or FD | Real/complex index; `n2=0` | Absorbing potential; FD stretching | Order 2 in z; iterative solves and phase accuracy limit useful steps |
+| `pade` / `helmholtz` | Spectral or FD | Real index; `n2=0` | Periodic, no absorber | Experimental full-index root; float64 required; rational and midpoint errors must be checked separately |
+
+FD supports orders 2/4/6 and the second-order isotropic nine-point stencil.
+The nine-point stencil requires square cells and does not support stretching.
+All methods use periodic transverse grids underneath any absorber. There are
+no selectable Dirichlet or Neumann boundaries. The default stepper in
+`SolverConfig` remains `rk4`; select split-step explicitly when desired.
+
+The following historical benchmark covers the explicit methods only; it does
+not compare their runtime with the new implicit methods.
+
 Measured on a 256×256 grid, `dz=0.005`, `nz=200`, float32, against the analytical
 Gaussian in vacuum:
 
 | `method` | `stepper` | Relative L2 error | Time | Notes |
 |---|---|---|---|---|
-| `spectral` | `split_step` | 1.7e-05 | **35 ms** | 2nd order in z, unconditionally stable |
+| `spectral` | `split_step` | 1.7e-05 | **35 ms** | 2nd order in z; unitary vacuum diffraction |
 | `spectral` | `rk4` | **5.9e-07** | 150 ms | 4th order in z, but z-step limited |
 | `finite_difference` | `rk4`, `fd_order=2` | 2.0e-04 | 198 ms | |
 | `finite_difference` | `rk4`, `fd_order=4` | 1.9e-06 | 750 ms | |
@@ -250,7 +289,9 @@ Gaussian in vacuum:
 | `finite_difference` | `rk4`, `compact=True` | 2.6e-04 | 535 ms | 2nd order, more isotropic |
 
 **`spectral` with `split_step` is the recommended default.** It is roughly four
-times faster than the next alternative and carries no step-size restriction.
+times faster than the next explicit alternative in this benchmark. Its
+homogeneous diffraction substep has no explicit stability restriction, but
+medium variation, nonlinearity, and splitting error still constrain accuracy.
 Use `rk4` where the additional order in `z` outweighs the increased runtime,
 and `finite_difference` where a local operator is required, for example to
 employ complex coordinate stretching in the PML, which the spectral method
@@ -277,9 +318,21 @@ step size restriction.
 
 The limit tightens as the grid is refined — it scales as `dx**2` — so a run that
 is stable at one resolution may not be at twice the resolution.
-`split_step` has no such restriction.
+`split_step` has no such diffraction stability restriction. The RK4 warning
+checks background diffraction only; index, Kerr, and absorbing terms can
+introduce additional restrictions.
 
 ## Optional numerical schemes
+
+### Fourth-order exponential integration
+
+`SolverConfig(method='spectral', stepper='etdrk4')` integrates homogeneous
+paraxial diffraction exactly and uses four explicit stages for refraction,
+Kerr, and absorption. It supports the shared history, observable, checkpoint,
+and gradient interfaces. Local terms still impose stability limits; smooth
+range dependence is needed for fourth-order convergence. See the
+[ETDRK4 guide](docs/exponential_integrators.md) for a runnable example,
+endpoint-sampling conventions, and restrictions.
 
 Every option below defaults to off, so existing code is unaffected.
 
@@ -287,8 +340,8 @@ Every option below defaults to off, so existing code is unaffected.
 
 Set `n2` on the simulation config to add an intensity-dependent index
 `n2 * |psi|**2`, turning the propagation into a nonlinear Schroedinger
-equation. Both steppers implement it; the split-step form is a pure phase, so
-it conserves power exactly.
+equation. RK4, split-step, and ETDRK4 implement it; the split-step form is a pure phase, so
+it conserves power up to roundoff for real index without PML or filtering.
 
 ```python
 sim_config = pws.SimulationConfig(..., n2=0.02)
@@ -326,7 +379,10 @@ cost. Measured through a strongly refracting medium over `lz=20`:
 
 The PML attenuation is applied once per full step rather than inside each
 sub-step: a backwards sub-step through a damping term would amplify instead of
-absorb. For `splitting_order=2` the two placements coincide exactly.
+absorb. This outer absorber split reduces the overall order to two, and the
+solver warns when it is combined with `splitting_order=4`. Without PML, fourth
+order still requires a sufficiently smooth medium. Wide-angle plus fourth-order
+splitting is rejected because its negative substep amplifies evanescent modes.
 
 ### Wide-angle propagation
 
@@ -353,7 +409,100 @@ difference only matters for tightly focused beams:
 wavenumber axis. A cubic nonlinearity spreads energy to three times its input
 wavenumber, and anything past Nyquist folds back onto the grid as spurious
 low-frequency structure. The mask folds into the precomputed propagator, so it
-costs nothing per step. Enabling it is advisable whenever `n2` is non-zero.
+adds no transform per step. It is a filter, not exact cubic dealiasing; the
+final nonlinear half-step can repopulate the discarded band. Check grid
+refinement and power loss when enabling it.
+
+### Implicit paraxial and full-index square-root propagation
+
+See the [complete implicit-solver guide](docs/implicit_solvers.md) for a runnable
+example, compatibility matrix, error-control workflow, and lower-level APIs.
+
+`stepper='crank_nicolson'` integrates the linear paraxial equation with a
+midpoint-frozen index, using `(I - h*A/2) psi_next = (I + h*A/2) psi`.
+It supports spectral and FD2/4/6 or nine-point discretizations, complex index,
+and the existing absorbing boundaries. It requires `n2=0`. For a skew-Hermitian
+periodic generator it preserves norm up to iterative-solve error; larger steps
+still incur phase error. It is not L-stable for very stiff absorption.
+
+```python
+pws.enable_x64()  # Use double precision for a tight iterative tolerance.
+solver_config = pws.SolverConfig(
+    method='finite_difference', fd_order=4, stepper='crank_nicolson',
+    linear_rtol=1e-8,
+)
+```
+
+The experimental `stepper='pade', propagator='helmholtz'` approximates the
+**whole one-way propagator**, with the full index inside the operator:
+
+```math
+H(z) = \mathcal L_\perp + k_0^2(n_0+\delta n(z))^2, \qquad
+\partial_z\psi = i(\sqrt{H(z)}-k_0n_0)\psi.
+```
+
+The outgoing branch has positive imaginary square root on negative real
+eigenvalues, giving evanescent decay. This remains a forward-only model;
+range variation is frozen at each midpoint and does not model backscatter.
+It is different from the homogeneous-root/local-refraction split above, and
+from the fractional Laplacian `sqrt(-Delta)`.
+
+```python
+pws.enable_x64()  # Before creating arrays or constructing the solver.
+solver_config = pws.SolverConfig(
+    method='spectral', stepper='pade', propagator='helmholtz',
+    pade_order=4, linear_rtol=1e-10,
+)
+pml_config = pws.PMLConfig(0, 0, 0.0)
+```
+
+This initial implementation requires real index, `n2=0`, float64, and periodic
+boundaries without PML. FD discretizations are also supported. Rotated Padé
+coefficients approximate `exp(i*h*k*(sqrt(H/k**2)-1))`; operator polynomials
+are applied without forming a dense matrix, with an FFT reference
+preconditioner and GMRES denominator solve. This is a prototype: degree,
+rotation, spectral range, and step size determine accuracy and stability.
+There is no universal guarantee near cutoff or far into the evanescent band.
+Polynomial evaluation can also become ill-conditioned on broad spectra; a
+small linear residual does not establish rational approximation accuracy.
+Large `k*dz` can overflow the series or underflow its exponential prefactor;
+invalid or fully underflowed coefficients produce NaNs. Refining dz alone does
+not remove the finite-degree root approximation error.
+Use degree refinement and `src.rational.pade_multiplier` to inspect the scalar
+response; for small problems compare with a dense eigendecomposition.
+
+Both implicit kernels return NaNs on failed residual checks. Padé also returns
+NaNs for a complex medium supplied through a traced callback. For diagnostics,
+`src.linear_solvers.solve_linear_system` returns the candidate, relative
+residual, and convergence flag. Gradients use JAX's implicit linear-solve
+rule; both forward and transpose solves must converge. Tighten tolerances and
+check directional derivatives for an inverse problem.
+
+Run `python examples/implicit_propagation.py` for independent dense-reference
+checks and a convergence figure.
+
+## New functionality and numerical corrections
+
+The current additions retain the configuration dataclasses and shared `solve`
+interface. Existing default methods are unchanged.
+
+| Addition or correction | Behavior and how to use it |
+|---|---|
+| ETDRK4 | Set `stepper='etdrk4'` for fourth-order spectral paraxial propagation with explicit local physics |
+| Crank–Nicolson | Set `stepper='crank_nicolson'`; supports the linear paraxial equation with spectral or FD operators |
+| Full-index square-root propagation | Select `stepper='pade', propagator='helmholtz'`; enable float64 and disable PML and Kerr |
+| Shared iterative solver | `src.linear_solvers.solve_linear_system` returns a candidate, relative residual, and convergence flag |
+| Rational function utilities | `src.rational.pade_coefficients`, `polynomial_action`, and `pade_multiplier` construct, apply, and inspect the approximation |
+| Physical parameter overrides | `build_operators` now carries `k0`, `n0`, and `dz` through kernels and callback coordinates, including nonzero media |
+| Stable homogeneous root | Wide-angle diffraction uses `-q**2/(sqrt(k**2-q**2)+k)` to avoid cancellation in float32 |
+| Kerr with complex index | The frozen-index local flow integrates the changing intensity in the Kerr phase for absorption and gain |
+| Compatibility guards | Wide-angle with Yoshida order 4 is rejected; an outer PML with Yoshida warns that overall order is 2 |
+| Order-zero absorber | The constant-depth profile remains zero in the interior |
+| Corrected examples | Intensity plots use squared amplitude; the tilted paraxial reference uses `qx/k` drift; turbulence diagnostics use a reference at the same plane and include the final plane |
+
+The convergence example and regression tests cover these additions. A standalone
+fractional-Laplacian solver, new nonperiodic discretizations, AAA/Krylov methods,
+and adaptive stepping remain planned extensions.
 
 ## Usage
 
@@ -427,8 +576,12 @@ limit. Measured lag-one correlation:
 | transverse | 0.986 | 0.984 |
 | longitudinal | 0.983 | **0.000** |
 
-Screens are appropriate when the step already exceeds the longitudinal
-correlation length, which is the typical case; generate the volume otherwise.
+Independent screens can approximate media whose longitudinal correlation
+length is much shorter than the chosen screen spacing; generate a correlated
+volume when that assumption does not apply. `strength` here is the index
+standard deviation per screen, not an integrated phase variance. Refining `dz`
+at fixed screen strength changes the random model; this API does not implement
+a Brownian phase increment with amplitude proportional to `sqrt(dz)`.
 
 ### Turbulence ensembles
 
@@ -602,7 +755,10 @@ What carries a gradient:
 
 The diffraction operators are built once when the solver is constructed, from
 concrete configuration values. To differentiate with respect to one of those
-constants, rebuild the operators from a traced value:
+constants, rebuild the operators from a traced value. An overridden `dz` also
+changes callback coordinates and the final propagation plane; index callbacks
+must index their data using its physical sampling coordinates:
+
 
 ```python
 def objective(n0):
@@ -617,9 +773,10 @@ reuses the PML profile and omits revalidation at every evaluation.
 
 Two conventions apply. JAX returns the **conjugate** cotangent for a real loss
 of a complex input, so the directional derivative pairs as `Re(grad * delta)`.
-A *real* `delta_n` enters as a pure phase, so the total power is exactly
-insensitive to it; a vanishing gradient is therefore correct rather than an
-error. Differentiate instead a quantity on which the medium acts, such as the
+For the paraxial split-step method with real index, no absorber, and no
+filtering, total power is insensitive to the index up to roundoff. A vanishing
+power gradient is then expected. This statement does not extend to evanescent
+losses in a square-root model or to arbitrary numerical schemes. Differentiate instead a quantity on which the medium acts, such as the
 beam radius or the encircled power.
 
 ### Checkpointing
@@ -627,7 +784,11 @@ beam radius or the encircled power.
 Reverse mode must retain sufficient state to replay the propagation backwards,
 a requirement that is linear in `nz` in the absence of mitigation. `solve` groups steps into
 blocks of `sqrt(nz)` and rematerializes each group, so the cost grows as
-`sqrt(nz)` instead. Measured on a Kerr run at 64×64, as compiled temporary
+`sqrt(nz)` when suitable group sizes are available. Groups must divide `nz`
+and be multiples of `save_every`; for prime `nz` with `save_every=1`, the
+current chooser falls back to one step per group and does not achieve the
+square-root memory scaling. Stored histories and gradient outputs add their
+own memory costs. Measured on a Kerr run at 64×64, as compiled temporary
 memory for one reverse pass:
 
 | `nz` | `checkpoint=False` | `checkpoint=True` | |
@@ -698,15 +859,23 @@ Derived properties: `k0` (vacuum wavenumber), `k` (`2*pi*n0/wavelength`), and
 | Field | Values | Meaning |
 |---|---|---|
 | `method` | `'spectral'`, `'finite_difference'` | Spatial discretization |
-| `stepper` | `'rk4'`, `'split_step'` | z-propagation scheme |
+| `stepper` | `'rk4'`, `'split_step'`, `'crank_nicolson'`, `'pade'`, `'etdrk4'` | z-propagation scheme |
 | `fd_order` | `2`, `4`, `6` | Finite difference accuracy |
 | `compact` | `bool` | Isotropic 9-point stencil; requires `dx == dy` |
 | `splitting_order` | `2`, `4` | Strang, or a Yoshida composition |
-| `propagator` | `'paraxial'`, `'wide_angle'` | Diffraction operator |
-| `dealias` | `bool` | Apply the 2/3 rule |
+| `propagator` | `'paraxial'`, `'wide_angle'`, `'helmholtz'` | Diffraction operator |
+| `dealias` | `bool` | Apply a 2/3 spectral filter, not exact cubic dealiasing |
 
-The last three act on the split-step propagator and are rejected with any other
-stepper.
+`splitting_order` and `dealias` are split-step options. `wide_angle` requires
+split-step; `helmholtz` and `pade` must be selected together.
+
+| Implicit option | Default | Meaning |
+|---|---|---|
+| `linear_rtol` | `1e-6` | Required unpreconditioned relative residual |
+| `linear_maxiter` | `50` | GMRES restart cycles |
+| `linear_restart` | `20` | Krylov dimension per cycle |
+| `pade_order` | `4` | Rational degree, 1–6 |
+| `pade_rotation` | `pi/6` | Branch rotation, strictly between 0 and pi |
 
 ### `PMLConfig`
 
@@ -728,7 +897,43 @@ solve(psi_0, z_0=0.0, medium=None, save_every=1, return_history=True,
 Returns `(psi_final, psi_history)`. `psi_history` is `None` when
 `return_history=False`. The solver takes `nz` steps of size `dz` from `z_0`, so
 it finishes at `z_0 + nz * dz`; chaining runs by passing the previous end as the
-next `z_0` reproduces one long run exactly.
+next `z_0` reproduces the same step sequence up to floating-point effects,
+provided the callback describes the same physical medium. An operator override
+for `dz` also changes these coordinates.
+
+`psi_0` is a complex `(nx, ny)` array. `save_every` must be a positive integer
+divisor of `nz`. History includes the initial plane and excludes the final
+plane; evaluate an observable on `psi_final` separately when it is needed.
+Passing an `observable_fn` does not enable history when `return_history=False`.
+Implicit steps that fail their residual checks return NaNs; see the
+[diagnostics guide](docs/implicit_solvers.md#linear-solves-and-failure-behavior).
+
+### `ParaxialWaveSolver.build_operators`
+
+```python
+operators = solver.build_operators({'k0': k0, 'n0': n0, 'dz': dz})
+psi_final, _ = solver.solve(psi_0, operators=operators, return_history=False)
+```
+
+Only `k0`, `n0`, and `dz` are recognized. Omitted entries use the simulation
+configuration; pass `k0=2*pi/wavelength` to vary the wavelength. The returned
+dictionary is a JAX pytree and should be passed as a whole. Traced overrides
+must remain physically valid; the builder does not rerun config validation.
+
+### Linear and rational utilities
+
+These utilities are available from their `src` modules, not top-level exports:
+
+| Import from | Function | Result |
+|---|---|---|
+| `paraxial_wave_solver.src.linear_solvers` | `solve_linear_system(matvec, rhs, preconditioner=None, *, rtol=1e-6, maxiter=50, restart=20)` | `LinearSolveResult(solution, relative_residual, converged)` |
+| `paraxial_wave_solver.src.rational` | `pade_coefficients(phase, order=4, rotation=pi/6)` | Ascending-power numerator and denominator coefficients |
+| `paraxial_wave_solver.src.rational` | `polynomial_action(coefficients, matvec, field)` | Polynomial applied using Horner's rule |
+| `paraxial_wave_solver.src.rational` | `pade_multiplier(normalized_eigenvalue, numerator, denominator, rotation)` | Scalar rational response for eigenvalues of `H/k**2` |
+
+See the [implicit guide](docs/implicit_solvers.md) for conventions, examples,
+convergence checks, and the difference between linear residual and approximation
+error. The low-level linear utility returns the candidate even on failure.
 
 ### `ensemble_solve`
 
@@ -756,6 +961,9 @@ Run these after `pip install -e .`:
 
 | Script | What it does |
 |---|---|
+| `etdrk4_convergence.py` | ETDRK4 and Strang step refinement against a dense matrix exponential |
+| [`etdrk4_convergence.ipynb`](examples/etdrk4_convergence.ipynb) | Executed notebook with error tables, convergence assertions, and a plot |
+| `implicit_propagation.py` | CN step refinement and Padé degree refinement against independent dense references |
 | `simple_beam.py` | Gaussian beam in vacuum against the analytical mode |
 | `hermite_gaussian.py` | HG₁₁ mode |
 | `laguerre_gaussian.py` | Four LG modes at 632.8 nm, in float64 |
@@ -763,11 +971,11 @@ Run these after `pip install -e .`:
 | `random_media.py` | Propagation through a random medium |
 | `pml_comparison.py` | Absorbing layer versus coordinate stretching |
 | `turbulence_propagation.py` | LG superposition through Von Karman turbulence |
-| `kerr_self_focusing.py` | Self-focusing, dealiasing, and 2nd vs 4th order splitting |
+| `kerr_self_focusing.py` | Self-focusing and filtering; separate smooth linear-medium order study |
 | `turbulence_diagnostics.py` | Beam quality vs turbulence strength, measured in-loop |
 | `adjoint_sensitivity.py` | Sensitivity maps and phase-mask inverse design, via `jax.grad` |
 | `turbulence_ensemble.py` | Monte-Carlo ensemble statistics with bootstrap error bars |
-| `demo.ipynb` | Notebook walkthrough of both solver families |
+| `demo.ipynb` | Notebook walkthrough of spectral split-step and FD/RK4 |
 | `turbulence_ensemble.ipynb` | Derivation and demonstration of ensemble statistics |
 
 ```bash
@@ -786,7 +994,11 @@ paraxial_wave_solver/
 │   │   ├── pml.py          # PML profile generation
 │   │   ├── diagnostics.py  # Beam quality and ensemble measures
 │   │   ├── ensemble.py     # Chunked Monte-Carlo driver and bootstrap
-│   │   ├── solvers.py      # Propagation kernels and the solver
+│   │   ├── solvers.py      # Propagation loop, explicit kernels, solver
+│   │   ├── exponential.py  # ETDRK4 coefficients and kernel
+│   │   ├── steppers.py     # Implicit CN and Padé kernels
+│   │   ├── linear_solvers.py # Residual-checked matrix-free GMRES
+│   │   ├── rational.py     # Padé coefficients and polynomial actions
 │   │   └── utils.py        # Analytical beams and random media
 │   └── tests/
 │       ├── conftest.py
@@ -794,6 +1006,9 @@ paraxial_wave_solver/
 │       ├── test_diagnostics.py
 │       ├── test_ensemble.py
 │       ├── test_gradients.py
+│       ├── test_implicit.py
+│       ├── test_regressions.py
+│       ├── test_examples.py
 │       ├── test_media.py
 │       ├── test_numerics.py
 │       ├── test_operators.py
@@ -801,6 +1016,7 @@ paraxial_wave_solver/
 ├── examples/
 │   ├── _plotting.py        # Shared figure helpers
 │   └── ...                 # See the table above
+├── docs/implicit_solvers.md # Implicit solver usage and validation
 ├── pyproject.toml          # Project metadata, pytest and ruff config
 ├── requirements.txt        # Dependency list, mirrors pyproject
 └── LICENSE
@@ -823,6 +1039,13 @@ Linting is configured in `pyproject.toml`:
 ```bash
 ruff check .
 ```
+
+The implicit tests use independent dense matrix exponentials and square roots,
+FD plane-wave symbols, degree/step refinement, finite-difference gradient
+checks, and deliberate solve failures. The regression tests cover parameter
+overrides, optical-wavelength cancellation, and combined Kerr/complex-index
+flows. Example checks validate the numerical claims in the new and corrected
+examples. These small CPU checks are not large-grid or accelerator benchmarks.
 
 ### Continuous integration
 

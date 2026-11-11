@@ -5,11 +5,11 @@ Three demonstrations in one figure:
 1. A Gaussian beam in a Kerr medium, at powers below, near and above the
    critical power for self-focusing. Below it diffraction wins and the beam
    spreads; above it the nonlinear lens wins and the beam collapses.
-2. The 2/3 dealiasing rule. A collapsing beam pushes energy to high transverse
-   wavenumbers, which fold back onto the grid as spurious structure unless the
-   upper third of each axis is removed.
+2. The 2/3 spectral filter. A collapsing beam pushes energy to high transverse
+   wavenumbers. Removing the upper band reduces contamination but is not
+   exact cubic dealiasing; spatial refinement remains necessary.
 3. The Yoshida composition against Strang splitting, as a step-size refinement
-   study through the same medium.
+   study through a smooth linear refracting medium without PML or filtering.
 
 Run after installing the package (`pip install -e .`):
 
@@ -60,7 +60,7 @@ def run_kerr(
   sim_config = build_config(n2)
   solver_config = pws.SolverConfig(
     method='spectral', stepper='split_step',
-    splitting_order=4,      # The nonlinear term rewards the higher order.
+    splitting_order=2,      # The outer PML split is second order.
     dealias=dealias,
   )
   pml_config = pws.PMLConfig(width_x=32, width_y=32, strength=3.0)
@@ -72,7 +72,7 @@ def run_kerr(
 
 
 def splitting_study() -> tuple[list[int], list[float], list[float]]:
-  """Refines dz for both splitting orders through a fixed Kerr medium.
+  """Refines dz for both splitting orders through a fixed linear medium.
 
   Returns:
     A tuple (step_counts, strang_errors, yoshida_errors).

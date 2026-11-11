@@ -79,10 +79,11 @@ def run(
   # what turbulence did. The scintillation index is restricted to the
   # illuminated region: averaged over the whole plane it would mostly report
   # how much dark background surrounds the beam.
-  reference = psi_0
-  illuminated = jnp.abs(reference)**2 > 0.01 * jnp.max(jnp.abs(reference)**2)
-
   def observable(psi, z):
+    reference = pws.laguerre_gaussian_beam(
+      sim_config, WAIST, p=0, l=1, z=z, power=POWER, envelope_only=True
+    )
+    illuminated = jnp.abs(reference)**2 > 0.01 * jnp.max(jnp.abs(reference)**2)
     metrics = pws.beam_diagnostics(psi, sim_config, mask=illuminated)
     metrics['overlap'] = pws.overlap(psi, reference)
     metrics['peak_ratio'] = pws.strehl_ratio(psi, reference)
@@ -90,6 +91,10 @@ def run(
 
   psi_final, history = solver.solve(
     psi_0, medium=volume, observable_fn=observable
+  )
+  final_metrics = observable(psi_final, sim_config.lz)
+  history = jax.tree_util.tree_map(
+    lambda h, f: jnp.concatenate([h, jnp.asarray(f)[None]]), history, final_metrics
   )
   return history, psi_0, psi_final, sim_config
 
@@ -109,7 +114,7 @@ def main():
     results[label] = run(cn2)
 
   sim_config = results['clear'][3]
-  z = jnp.arange(sim_config.nz) * sim_config.dz
+  z = jnp.arange(sim_config.nz + 1) * sim_config.dz
 
   panels = [
     ('m2_x', 'Beam quality $M^2_x$', None),

@@ -173,13 +173,13 @@ def main(N_simulations, Cn2, output_filename, coeffs=None):
 
   # 1. Intensity at z=0.
   plt.subplot(2, 2, 1)
-  plt.imshow(jnp.abs(psi_0).T, origin='lower', cmap='inferno')
+  plt.imshow((jnp.abs(psi_0)**2).T, origin='lower', cmap='inferno')
   plt.title('Initial Intensity (z=0)')
   plt.axis('off')
 
   # 2. Numerical Intensity at z=final.
   plt.subplot(2, 2, 2)
-  plt.imshow(jnp.abs(psi_final).T, origin='lower', cmap='inferno')
+  plt.imshow((jnp.abs(psi_final)**2).T, origin='lower', cmap='inferno')
   plt.title(f'Turbulent Intensity (z={z_final:.2e})')
   plt.axis('off')
 

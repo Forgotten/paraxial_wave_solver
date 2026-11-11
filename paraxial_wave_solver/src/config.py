@@ -13,7 +13,7 @@ with k = k0 * n0. The result is still exact:
     d2(psi)/dz2 + 2*1j*k * d(psi)/dz + lap_perp(psi)
         + k0**2 * (n**2 - n0**2) * psi = 0
 
-Two approximations reduce it to what this package integrates. The paraxial
+Two approximations give the default paraxial model. The paraxial
 approximation drops d2(psi)/dz2, which turns the problem into an initial-value
 march in z and discards the backward-travelling wave. Weak index contrast,
 n = n0 + delta_n with delta_n << n0, linearizes n**2 - n0**2 to 2*n0*delta_n.
@@ -33,9 +33,14 @@ Under complex coordinate stretching L_perp becomes
 and the sigma term above is dropped, since the absorption then lives in the
 operator instead.
 
-With `propagator='wide_angle'` the paraxial approximation is not made: the
-diffraction operator is the exact one-way root 1j*(sqrt(k**2 + lap_perp) - k),
-of which the paraxial form is the leading term.
+With `propagator='wide_angle'`, homogeneous diffraction uses the exact one-way
+root 1j*(sqrt(k**2 + lap_perp) - k). Heterogeneous refraction remains a separate
+local term. Negative eigenvalues of the root's argument give evanescent decay.
+
+The experimental `stepper='pade', propagator='helmholtz'` instead approximates
+exp(1j*h*(sqrt(H)-k)), H = L_perp + k0**2*(n0+delta_n)**2, with a real index
+frozen at each midpoint. It requires float64, n2=0, and no absorber. This
+full-index one-way model differs from both the paraxial model and sqrt(-L_perp).
 
 Conventions
 -----------
@@ -43,7 +48,9 @@ Conventions
   * The solver works in the envelope psi, never the full field E.
   * Refractive index is supplied as the *perturbation* delta_n = n - n0, so
     vacuum is zero, not one.
-  * Without a PML and with real delta_n the equation conserves sum(|psi|**2).
+  * The periodic paraxial equation conserves sum(|psi|**2) for real index
+    without absorption. Discrete errors and filtering can change that norm;
+    square-root models additionally permit evanescent losses.
 """
 
 import math
@@ -177,12 +184,18 @@ class SolverConfig:
               Ignored when method is 'spectral' or when compact is True.
     compact: Use the isotropic compact 9-point stencil. Requires
              method='finite_difference' and dx == dy.
-    stepper: Z-propagation scheme ('rk4' or 'split_step'). 'split_step'
-             requires method='spectral'.
+    stepper: 'rk4', 'split_step', 'crank_nicolson', 'pade', or 'etdrk4'.
+             ETDRK4 requires spectral paraxial diffraction and supports Kerr
+             and complex index; local terms retain explicit stability limits.
+             Split-step
+             requires spectral discretization. The implicit methods support
+             both discretizations and currently require n2=0. Padé requires
+             propagator='helmholtz', float64, and no PML.
     splitting_order: Order of accuracy in z for the split-step composition.
                      2 is Strang splitting; 4 is a Yoshida composition of
                      three Strang steps, so it costs three times as much per
-                     step but usually permits a far larger dz. Requires
+                     step. Accuracy gains require smooth media; an outer
+                     PML split limits the overall order to two. Requires
                      stepper='split_step'.
     propagator: Diffraction operator. 'paraxial' is the usual
                 exp(-1j * dz * k_perp**2 / (2 * k)) small-angle form.
@@ -192,19 +205,32 @@ class SolverConfig:
                 rather than mis-propagating them. In Fourier space the exact
                 root is a diagonal multiplier, so no Pade approximation is
                 needed and it costs the same as the paraxial form. Requires
-                stepper='split_step'.
+                stepper='split_step'. 'helmholtz' puts the full index inside
+                the operator root and requires stepper='pade'.
     dealias: Apply the 2/3 rule to the split-step propagator, zeroing the
              upper third of each transverse wavenumber axis. Matters once n2
              is non-zero, where the cubic term aliases energy back onto the
-             grid. Requires stepper='split_step'.
+             grid. This is filtering, not exact cubic dealiasing. Requires
+             stepper='split_step'.
+    pade_order: Degree of the rotated rational whole-step approximation, 1–6.
+    pade_rotation: Branch rotation in radians, between zero and pi. Accuracy
+                   depends on this value and the discrete operator spectrum.
+    linear_rtol: Required relative residual for implicit solves.
+    linear_maxiter: Maximum GMRES restart cycles.
+    linear_restart: Krylov dimension per cycle.
   """
   method: Literal['finite_difference', 'spectral']
   fd_order: int = 2
   compact: bool = False
-  stepper: Literal['rk4', 'split_step'] = 'rk4'
+  stepper: Literal['rk4', 'split_step', 'crank_nicolson', 'pade', 'etdrk4'] = 'rk4'
   splitting_order: int = 2
-  propagator: Literal['paraxial', 'wide_angle'] = 'paraxial'
+  propagator: Literal['paraxial', 'wide_angle', 'helmholtz'] = 'paraxial'
   dealias: bool = False
+  pade_order: int = 4
+  pade_rotation: float = math.pi / 6
+  linear_rtol: float = 1e-6
+  linear_maxiter: int = 50
+  linear_restart: int = 20
 
   def __post_init__(self) -> None:
     if self.method not in ('finite_difference', 'spectral'):
@@ -212,11 +238,13 @@ class SolverConfig:
         f"Unsupported method {self.method!r}; expected 'finite_difference' "
         "or 'spectral'."
       )
-    if self.stepper not in ('rk4', 'split_step'):
+    if self.stepper not in ('rk4', 'split_step', 'crank_nicolson', 'pade', 'etdrk4'):
       raise ValueError(
         f"Unsupported stepper {self.stepper!r}; expected 'rk4' or "
-        "'split_step'."
+        "'split_step', 'crank_nicolson', 'pade' or 'etdrk4'."
       )
+    if self.stepper == 'etdrk4' and self.method != 'spectral':
+      raise ValueError("stepper='etdrk4' requires method='spectral'.")
     if self.stepper == 'split_step' and self.method != 'spectral':
       raise ValueError(
         "stepper='split_step' requires method='spectral', got "
@@ -238,17 +266,35 @@ class SolverConfig:
         f"Unsupported splitting_order {self.splitting_order!r}; expected one "
         f"of {SPLITTING_ORDERS}."
       )
-    if self.propagator not in ('paraxial', 'wide_angle'):
+    if self.propagator not in ('paraxial', 'wide_angle', 'helmholtz'):
       raise ValueError(
         f"Unsupported propagator {self.propagator!r}; expected 'paraxial' or "
-        "'wide_angle'."
+        "'wide_angle' or 'helmholtz'."
       )
+    if self.propagator == 'wide_angle' and self.splitting_order == 4:
+      raise ValueError(
+        "wide_angle requires splitting_order=2: negative Yoshida steps "
+        "amplify evanescent modes."
+      )
+    if (self.stepper == 'pade') != (self.propagator == 'helmholtz'):
+      raise ValueError("stepper='pade' requires propagator='helmholtz' and vice versa.")
+    if not isinstance(self.pade_order, int) or not 1 <= self.pade_order <= 6:
+      raise ValueError("pade_order must be an integer between one and six.")
+    if not 0 < self.pade_rotation < math.pi:
+      raise ValueError("pade_rotation must lie strictly between zero and pi.")
+    if not 0 < self.linear_rtol < 1:
+      raise ValueError("linear_rtol must lie strictly between zero and one.")
+    for name in ('linear_maxiter', 'linear_restart'):
+      if not isinstance(getattr(self, name), int) or getattr(self, name) < 1:
+        raise ValueError(f"{name} must be a positive integer.")
     if self.stepper != 'split_step':
       # These three all act on the split-step propagator, which RK4 and the
       # finite difference operators do not build.
       for name, default in (('splitting_order', 2),
                             ('propagator', 'paraxial'),
                             ('dealias', False)):
+        if name == 'propagator' and self.stepper == 'pade':
+          continue
         if getattr(self, name) != default:
           raise ValueError(
             f"{name}={getattr(self, name)!r} requires stepper='split_step', "

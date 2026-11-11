@@ -49,12 +49,12 @@ def main():
   centre_y = sim_config.ny // 2
   fig, axes = plt.subplots(2, 2, figsize=(15, 10))
 
-  image = axes[0, 0].imshow(jnp.abs(psi_0).T, origin='lower', cmap='inferno')
+  image = axes[0, 0].imshow((jnp.abs(psi_0)**2).T, origin='lower', cmap='inferno')
   axes[0, 0].set_title('Initial Intensity (z=0)')
   axes[0, 0].axis('off')
   plt.colorbar(image, ax=axes[0, 0], fraction=0.046)
 
-  image = axes[0, 1].imshow(jnp.abs(psi_final).T, origin='lower',
+  image = axes[0, 1].imshow((jnp.abs(psi_final)**2).T, origin='lower',
                             cmap='inferno')
   axes[0, 1].set_title(f'Numerical Intensity (z={sim_config.lz:.2e})')
   axes[0, 1].axis('off')

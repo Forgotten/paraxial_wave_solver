@@ -32,7 +32,7 @@ def get_tilted_gaussian_analytical(
   Returns:
     Complex 2D field array of shape (nx, ny).
   """
-  k0 = sim_config.k0
+  k0 = sim_config.k
   z_R = k0 * w0**2 / 2.0
 
   # Grid.
@@ -45,8 +45,8 @@ def get_tilted_gaussian_analytical(
   y0 = sim_config.ly / 2.0
 
   # Center shift due to tilt.
-  # x_c(z) = x0 + z * tan(theta) ~ x0 + z * theta.
-  xc = x0 + z * jnp.tan(theta)
+  # The paraxial group velocity is qx/k = sin(theta).
+  xc = x0 + z * jnp.sin(theta)
   yc = y0
 
   # Beam parameters at z.
@@ -89,7 +89,7 @@ def run_pml_test():
 
   # We use a Gaussian beam moving towards the boundary to test PML.
   w0 = 5.0
-  k0 = sim_config.k0
+  k0 = sim_config.k
 
   x = jnp.arange(sim_config.nx) * sim_config.dx
   y = jnp.arange(sim_config.ny) * sim_config.dy
@@ -120,7 +120,7 @@ def run_pml_test():
   solver_std = pws.ParaxialWaveSolver(
     sim_config, solver_config, pml_config_std
   )
-  psi_final_std, _ = solver_std.solve(psi_0)
+  psi_final_std, _ = solver_std.solve(psi_0, return_history=False)
 
   # 2. FD with complex coordinate stretching.
   print("Running FD with Complex Coordinate Stretching...")
@@ -133,7 +133,7 @@ def run_pml_test():
   solver_ccs = pws.ParaxialWaveSolver(
     sim_config, solver_config, pml_config_ccs
   )
-  psi_final_ccs, _ = solver_ccs.solve(psi_0)
+  psi_final_ccs, _ = solver_ccs.solve(psi_0, return_history=False)
 
   # 3. Analytical solution.
   print("Computing Analytical Solution...")

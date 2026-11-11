@@ -106,9 +106,9 @@ def plot_benchmark(
 
   fig, axes = plt.subplots(2, 3, figsize=(15, 10))
 
-  _show(axes[0, 0], jnp.abs(psi_0), initial_title)
-  _show(axes[0, 1], jnp.abs(psi_final), f'Numerical Intensity (z={z_final:g})')
-  _show(axes[0, 2], jnp.abs(psi_analytical),
+  _show(axes[0, 0], jnp.abs(psi_0)**2, initial_title)
+  _show(axes[0, 1], jnp.abs(psi_final)**2, f'Numerical Intensity (z={z_final:g})')
+  _show(axes[0, 2], jnp.abs(psi_analytical)**2,
         f'Analytical Intensity (z={z_final:g})')
   _show(axes[1, 0], error_field, f'Absolute Error (rel L2 = {l2_error:.2e})',
         cmap='viridis', colorbar=True, label='|Error|')
