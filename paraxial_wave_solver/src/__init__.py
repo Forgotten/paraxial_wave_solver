@@ -25,6 +25,7 @@ from .diagnostics import (
   total_power,
 )
 from .ensemble import ensemble_solve, ensemble_standard_error
+from .krylov import KrylovResult, square_root_action
 from .pml import PMLData, StretchFields, generate_pml_profile
 from .solvers import ParaxialWaveSolver, propagate
 from .utils import (
@@ -54,6 +55,8 @@ def enable_x64(enable: bool = True) -> None:
 
 
 __all__ = [
+  "KrylovResult",
+  "square_root_action",
   "AdaptiveConfig",
   "AdaptiveResult",
   "SimulationConfig",

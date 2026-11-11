@@ -185,7 +185,9 @@ class SolverConfig:
     compact: Use the isotropic compact 9-point stencil. Requires
              method='finite_difference' and dx == dy.
     stepper: 'rk4', 'split_step', 'crank_nicolson', 'pade', 'etdrk4',
-             or 'magnus4'. Magnus requires linear paraxial physics and uses
+             'magnus4', or 'lanczos'. Lanczos applies the full-index Helmholtz
+             root in a Hermitian Krylov subspace. Magnus requires linear
+             paraxial physics and uses
              two Gauss-node samples with matrix-free exponential actions.
              ETDRK4 requires spectral paraxial diffraction and supports Kerr
              and complex index; local terms retain explicit stability limits.
@@ -208,7 +210,7 @@ class SolverConfig:
                 root is a diagonal multiplier, so no Pade approximation is
                 needed and it costs the same as the paraxial form. Requires
                 stepper='split_step'. 'helmholtz' puts the full index inside
-                the operator root and requires stepper='pade'.
+                the operator root and requires stepper='pade' or 'lanczos'.
     dealias: Apply the 2/3 rule to the split-step propagator, zeroing the
              upper third of each transverse wavenumber axis. Matters once n2
              is non-zero, where the cubic term aliases energy back onto the
@@ -217,6 +219,8 @@ class SolverConfig:
     pade_order: Degree of the rotated rational whole-step approximation, 1–6.
     pade_rotation: Branch rotation in radians, between zero and pi. Accuracy
                    depends on this value and the discrete operator spectrum.
+    krylov_dim: Maximum dimension of the reorthogonalized Lanczos space.
+    krylov_rtol: Relative nested-space indicator tolerance (not an error bound).
     exponential_max_substeps: Maximum scaled Taylor substeps per Magnus
                               exponential action; insufficient capacity returns NaNs.
     linear_rtol: Required relative residual for implicit solves.
@@ -227,13 +231,15 @@ class SolverConfig:
   fd_order: int = 2
   compact: bool = False
   stepper: Literal[
-    'rk4', 'split_step', 'crank_nicolson', 'pade', 'etdrk4', 'magnus4'
+    'rk4', 'split_step', 'crank_nicolson', 'pade', 'etdrk4', 'magnus4', 'lanczos'
   ] = 'rk4'
   splitting_order: int = 2
   propagator: Literal['paraxial', 'wide_angle', 'helmholtz'] = 'paraxial'
   dealias: bool = False
   pade_order: int = 4
   pade_rotation: float = math.pi / 6
+  krylov_dim: int = 32
+  krylov_rtol: float = 1e-6
   exponential_max_substeps: int = 256
   linear_rtol: float = 1e-6
   linear_maxiter: int = 50
@@ -246,10 +252,10 @@ class SolverConfig:
         "or 'spectral'."
       )
     if self.stepper not in ('rk4', 'split_step', 'crank_nicolson', 'pade',
-                            'etdrk4', 'magnus4'):
+                            'etdrk4', 'magnus4', 'lanczos'):
       raise ValueError(
         f"Unsupported stepper {self.stepper!r}; expected 'rk4' or "
-        "'split_step', 'crank_nicolson', 'pade', 'etdrk4' or 'magnus4'."
+        "'split_step', 'crank_nicolson', 'pade', 'etdrk4', 'magnus4', or 'lanczos'."
       )
     if self.stepper == 'etdrk4' and self.method != 'spectral':
       raise ValueError("stepper='etdrk4' requires method='spectral'.")
@@ -284,15 +290,18 @@ class SolverConfig:
         "wide_angle requires splitting_order=2: negative Yoshida steps "
         "amplify evanescent modes."
       )
-    if (self.stepper == 'pade') != (self.propagator == 'helmholtz'):
-      raise ValueError("stepper='pade' requires propagator='helmholtz' and vice versa.")
+    if (self.stepper in ('pade', 'lanczos')) != (self.propagator == 'helmholtz'):
+      raise ValueError("Helmholtz propagation requires stepper='pade' or 'lanczos'.")
     if not isinstance(self.pade_order, int) or not 1 <= self.pade_order <= 6:
       raise ValueError("pade_order must be an integer between one and six.")
     if not 0 < self.pade_rotation < math.pi:
       raise ValueError("pade_rotation must lie strictly between zero and pi.")
     if not 0 < self.linear_rtol < 1:
       raise ValueError("linear_rtol must lie strictly between zero and one.")
-    for name in ('linear_maxiter', 'linear_restart', 'exponential_max_substeps'):
+    if not 0 < self.krylov_rtol < 1:
+      raise ValueError('krylov_rtol must lie between zero and one.')
+    for name in ('linear_maxiter', 'linear_restart', 'exponential_max_substeps',
+                 'krylov_dim'):
       if not isinstance(getattr(self, name), int) or getattr(self, name) < 1:
         raise ValueError(f"{name} must be a positive integer.")
     if self.stepper != 'split_step':
@@ -301,7 +310,7 @@ class SolverConfig:
       for name, default in (('splitting_order', 2),
                             ('propagator', 'paraxial'),
                             ('dealias', False)):
-        if name == 'propagator' and self.stepper == 'pade':
+        if name == 'propagator' and self.stepper in ('pade', 'lanczos'):
           continue
         if getattr(self, name) != default:
           raise ValueError(

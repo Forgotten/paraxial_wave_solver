@@ -33,10 +33,15 @@ ETDRK4 integrates homogeneous spectral diffraction exactly and applies four
 explicit stages to local refraction, Kerr, and absorption. Smooth problems
 have fourth-order longitudinal accuracy; local stability limits remain.
 
+Magnus-4 uses two Gauss-node samples and two matrix-free exponential actions
+for smooth linear paraxial propagation.
+
 The Crank–Nicolson kernel solves the linear paraxial equation implicitly. The
 experimental Padé kernel instead approximates exp(i*h*(sqrt(H)-k)), with
 H = L_perp + k0**2 * (n0 + delta_n)**2. It requires real index, no Kerr, and
-periodic boundaries without PML. Both freeze the index at the step midpoint.
+periodic boundaries without PML. The Lanczos kernel evaluates the same
+full-index propagator through a Hermitian Krylov projection. CN and both root
+kernels freeze the index at the step midpoint.
 
 Everything that does not vary with z - the diffraction operators, the PML
 attenuation, the wavenumber grids - is built once in `ParaxialWaveSolver` and
@@ -62,6 +67,7 @@ from .config import (
   SolverConfig,
 )
 from .exponential import etd_coefficients, make_etdrk4_kernel
+from .krylov import make_lanczos_kernel
 from .magnus import make_magnus_kernel
 from .operators import (
   get_spectral_k_grids,
@@ -587,21 +593,21 @@ class ParaxialWaveSolver:
         f"ny={sim_config.ny}; it must be smaller than ny / 2."
       )
 
-    if (solver_config.stepper in ('crank_nicolson', 'pade', 'magnus4')
+    if (solver_config.stepper in ('crank_nicolson', 'pade', 'magnus4', 'lanczos')
         and sim_config.n2 != 0):
       raise ValueError("Linear steppers require n2=0.")
     if solver_config.stepper == 'magnus4' and pml_config.use_complex_stretching:
       raise ValueError("Magnus currently supports local absorption, not stretching.")
     if solver_config.stepper == 'etdrk4' and pml_config.use_complex_stretching:
       raise ValueError("ETDRK4 supports the absorbing potential, not stretching.")
-    if solver_config.stepper == 'pade':
-      if not jax.config.jax_enable_x64:
+    if solver_config.stepper in ('pade', 'lanczos'):
+      if solver_config.stepper == 'pade' and not jax.config.jax_enable_x64:
         raise ValueError("Padé propagation requires enable_x64() before construction.")
       if (pml_config.strength > 0
           and (pml_config.width_x or pml_config.width_y)):
-        raise ValueError("Padé propagation currently requires no PML.")
+        raise ValueError("Full-index root propagation currently requires no PML.")
       if pml_config.use_complex_stretching:
-        raise ValueError("Padé propagation does not support complex stretching.")
+        raise ValueError("Full-index root propagation does not support stretching.")
 
     _warn_if_unstable(solver_config, sim_config)
 
@@ -644,7 +650,11 @@ class ParaxialWaveSolver:
       laplacian_fn = _make_laplacian_fn(
         solver_config, sim_config, use_stretch
       )
-      if solver_config.stepper == 'magnus4':
+      if solver_config.stepper == 'lanczos':
+        self._step_fn = make_lanczos_kernel(
+          solver_config, laplacian_fn, delta_n_fn,
+        )
+      elif solver_config.stepper == 'magnus4':
         self._step_fn = make_magnus_kernel(
           laplacian_fn, delta_n_fn, has_pml,
           solver_config.exponential_max_substeps,

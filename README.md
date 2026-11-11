@@ -9,6 +9,7 @@ atmospheric or underwater turbulence.
 
 ## Documentation
 
+- [Hermitian square-root actions](docs/square_root_actions.md)
 - [Magnus-4 propagation](docs/magnus_integrators.md)
 - [Adaptive propagation](docs/adaptive_stepping.md)
 - [ETDRK4: fourth-order exponential propagation](docs/exponential_integrators.md)
@@ -24,10 +25,11 @@ atmospheric or underwater turbulence.
   validated on construction.
 - **Fast.** The propagation loop is a JIT-compiled `jax.lax.scan`, and every
   z-independent operator is built once rather than per step.
-- **Multiple solvers.** Pseudo-spectral (split-step Fourier, RK4, or Crank–Nicolson) and finite
-  difference at 2nd, 4th and 6th order, plus a second-order isotropic 9-point stencil.
-- **Experimental full-index propagation.** A rotated Padé approximation places
-  the heterogeneous index inside the one-way Helmholtz square root.
+- **Multiple solvers.** Split-step Fourier, RK4, ETDRK4, Magnus-4, and
+  Crank–Nicolson, with spectral and supported finite-difference discretizations
+  at orders 2/4/6, plus a second-order isotropic 9-point stencil.
+- **Experimental full-index propagation.** Rotated Padé and Hermitian Lanczos
+  actions place the heterogeneous index inside the one-way Helmholtz square root.
 - **Implicit linear algebra.** Matrix-free GMRES with FFT preconditioning,
   explicit residual checks, and implicit differentiation.
 - **Absorbing boundaries.** Perfectly matched layers, as an absorbing potential
@@ -267,6 +269,8 @@ Choose the physical model and boundary treatment first, then the stepper:
 | `etdrk4` / `paraxial` | Spectral | Real/complex index; Kerr | Absorbing potential | Order 4 for smooth problems; local terms remain explicit |
 | `rk4` / `paraxial` | Spectral or FD | Real/complex index; Kerr | Absorbing potential; FD stretching | Order 4 in z for smooth problems; conditional stability |
 | `crank_nicolson` / `paraxial` | Spectral or FD | Real/complex index; `n2=0` | Absorbing potential; FD stretching | Order 2 in z; iterative solves and phase accuracy limit useful steps |
+| `magnus4` / `paraxial` | Spectral or FD | Real/complex index; `n2=0` | Absorbing potential | Order 4 for smooth range variation; bounded scaled exponential actions |
+| `lanczos` / `helmholtz` | Spectral or FD | Real index; `n2=0` | Periodic, no absorber | Krylov dimension refinement plus order-2 midpoint sampling; forward use only |
 | `pade` / `helmholtz` | Spectral or FD | Real index; `n2=0` | Periodic, no absorber | Experimental full-index root; float64 required; rational and midpoint errors must be checked separately |
 
 FD supports orders 2/4/6 and the second-order isotropic nine-point stencil.
@@ -490,6 +494,7 @@ interface. Existing default methods are unchanged.
 
 | Addition or correction | Behavior and how to use it |
 |---|---|
+| Hermitian square-root actions | Use `stepper='lanczos', propagator='helmholtz'` or standalone `square_root_action` with a refinement indicator |
 | Magnus-4 | Set `stepper='magnus4'` for fourth-order linear paraxial propagation in smooth range-dependent media |
 | Adaptive stepping | Use `solve_adaptive` for local error control, exact output planes, and accepted/rejected step counts |
 | ETDRK4 | Set `stepper='etdrk4'` for fourth-order spectral paraxial propagation with explicit local physics |
@@ -504,9 +509,9 @@ interface. Existing default methods are unchanged.
 | Order-zero absorber | The constant-depth profile remains zero in the interior |
 | Corrected examples | Intensity plots use squared amplitude; the tilted paraxial reference uses `qx/k` drift; turbulence diagnostics use a reference at the same plane and include the final plane |
 
-The convergence example and regression tests cover these additions. A standalone
-fractional-Laplacian solver, new nonperiodic discretizations, and AAA/Krylov
-methods remain planned extensions.
+The convergence examples and regression tests cover these additions. Nonperiodic
+discretizations, rational Krylov/AAA actions, and implicit Gauss/Radau methods
+remain planned extensions.
 
 ## Usage
 
@@ -748,6 +753,10 @@ def objective(phase):
 gradient = jax.grad(objective)(phase)
 ```
 
+The following applies to fixed-step differentiable methods, including Magnus-4.
+The host adaptive controller and derivatives through Lanczos breakdown or repeated
+Ritz eigenvalues are not supported; use Padé for differentiable full-index work.
+
 What carries a gradient:
 
 | quantity | how |
@@ -863,7 +872,7 @@ Derived properties: `k0` (vacuum wavenumber), `k` (`2*pi*n0/wavelength`), and
 | Field | Values | Meaning |
 |---|---|---|
 | `method` | `'spectral'`, `'finite_difference'` | Spatial discretization |
-| `stepper` | `'rk4'`, `'split_step'`, `'crank_nicolson'`, `'pade'`, `'etdrk4'` | z-propagation scheme |
+| `stepper` | `'rk4'`, `'split_step'`, `'crank_nicolson'`, `'pade'`, `'etdrk4'`, `'magnus4'`, `'lanczos'` | z-propagation scheme |
 | `fd_order` | `2`, `4`, `6` | Finite difference accuracy |
 | `compact` | `bool` | Isotropic 9-point stencil; requires `dx == dy` |
 | `splitting_order` | `2`, `4` | Strang, or a Yoshida composition |
@@ -871,15 +880,18 @@ Derived properties: `k0` (vacuum wavenumber), `k` (`2*pi*n0/wavelength`), and
 | `dealias` | `bool` | Apply a 2/3 spectral filter, not exact cubic dealiasing |
 
 `splitting_order` and `dealias` are split-step options. `wide_angle` requires
-split-step; `helmholtz` and `pade` must be selected together.
+split-step; `helmholtz` requires `stepper='pade'` or `stepper='lanczos'`.
 
-| Implicit option | Default | Meaning |
+| Iterative / exponential option | Default | Meaning |
 |---|---|---|
 | `linear_rtol` | `1e-6` | Required unpreconditioned relative residual |
 | `linear_maxiter` | `50` | GMRES restart cycles |
 | `linear_restart` | `20` | Krylov dimension per cycle |
 | `pade_order` | `4` | Rational degree, 1–6 |
 | `pade_rotation` | `pi/6` | Branch rotation, strictly between 0 and pi |
+| `exponential_max_substeps` | `256` | Maximum scaled Taylor actions per Magnus exponential |
+| `krylov_dim` | `32` | Maximum Hermitian Lanczos basis size |
+| `krylov_rtol` | `1e-6` | Nested-subspace refinement indicator tolerance |
 
 ### `PMLConfig`
 
@@ -965,6 +977,7 @@ Run these after `pip install -e .`:
 
 | Script | What it does |
 |---|---|
+| `square_root_actions.py` | Krylov dimension refinement and dense full-index reference |
 | `magnus_convergence.py` | Magnus-4 convergence against an independent ODE reference |
 | `adaptive_propagation.py` | Adaptive tolerance refinement against an analytic solution |
 | `etdrk4_convergence.py` | ETDRK4 and Strang step refinement against a dense matrix exponential |
@@ -1001,6 +1014,9 @@ paraxial_wave_solver/
 │   │   ├── diagnostics.py  # Beam quality and ensemble measures
 │   │   ├── ensemble.py     # Chunked Monte-Carlo driver and bootstrap
 │   │   ├── solvers.py      # Propagation loop, explicit kernels, solver
+│   │   ├── adaptive.py     # Host step-doubling controller and diagnostics
+│   │   ├── magnus.py       # CF4 and matrix-free exponential actions
+│   │   ├── krylov.py       # Hermitian square-root actions
 │   │   ├── exponential.py  # ETDRK4 coefficients and kernel
 │   │   ├── steppers.py     # Implicit CN and Padé kernels
 │   │   ├── linear_solvers.py # Residual-checked matrix-free GMRES
