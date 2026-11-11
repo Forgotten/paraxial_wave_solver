@@ -76,5 +76,6 @@ per step count, not error per runtime: ETDRK4 evaluates four local stages.
 Tests additionally cover smooth range variation, Kerr with absorption and PML,
 phi functions against augmented matrix exponentials, vacuum propagation beyond
 the RK4 diffraction limit, gradients, batching, and callback coordinates.
-Adaptive schedules and Magnus integrators remain future work; this addition
+Adaptive step doubling is available through [solve_adaptive](adaptive_stepping.md).
+Magnus integrators remain future work; ETDRK4
 uses fixed steps.

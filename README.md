@@ -9,6 +9,7 @@ atmospheric or underwater turbulence.
 
 ## Documentation
 
+- [Adaptive propagation](docs/adaptive_stepping.md)
 - [ETDRK4: fourth-order exponential propagation](docs/exponential_integrators.md)
 
 - [Solver capabilities and selection](#choosing-a-solver)
@@ -488,6 +489,7 @@ interface. Existing default methods are unchanged.
 
 | Addition or correction | Behavior and how to use it |
 |---|---|
+| Adaptive stepping | Use `solve_adaptive` for local error control, exact output planes, and accepted/rejected step counts |
 | ETDRK4 | Set `stepper='etdrk4'` for fourth-order spectral paraxial propagation with explicit local physics |
 | Crank–Nicolson | Set `stepper='crank_nicolson'`; supports the linear paraxial equation with spectral or FD operators |
 | Full-index square-root propagation | Select `stepper='pade', propagator='helmholtz'`; enable float64 and disable PML and Kerr |
@@ -501,8 +503,8 @@ interface. Existing default methods are unchanged.
 | Corrected examples | Intensity plots use squared amplitude; the tilted paraxial reference uses `qx/k` drift; turbulence diagnostics use a reference at the same plane and include the final plane |
 
 The convergence example and regression tests cover these additions. A standalone
-fractional-Laplacian solver, new nonperiodic discretizations, AAA/Krylov methods,
-and adaptive stepping remain planned extensions.
+fractional-Laplacian solver, new nonperiodic discretizations, and AAA/Krylov
+methods remain planned extensions.
 
 ## Usage
 
@@ -961,6 +963,7 @@ Run these after `pip install -e .`:
 
 | Script | What it does |
 |---|---|
+| `adaptive_propagation.py` | Adaptive tolerance refinement against an analytic solution |
 | `etdrk4_convergence.py` | ETDRK4 and Strang step refinement against a dense matrix exponential |
 | [`etdrk4_convergence.ipynb`](examples/etdrk4_convergence.ipynb) | Executed notebook with error tables, convergence assertions, and a plot |
 | `implicit_propagation.py` | CN step refinement and Padé degree refinement against independent dense references |

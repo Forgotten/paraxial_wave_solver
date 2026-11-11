@@ -2,6 +2,7 @@
 
 import jax
 
+from .adaptive import AdaptiveConfig, AdaptiveResult
 from .config import Field, PMLConfig, SimulationConfig, SolverConfig
 from .diagnostics import (
   beam_diagnostics,
@@ -53,6 +54,8 @@ def enable_x64(enable: bool = True) -> None:
 
 
 __all__ = [
+  "AdaptiveConfig",
+  "AdaptiveResult",
   "SimulationConfig",
   "SolverConfig",
   "PMLConfig",

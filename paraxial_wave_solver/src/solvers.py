@@ -736,6 +736,15 @@ class ParaxialWaveSolver:
         operators['inverse_reference'] = 1 / denominator
     return operators
 
+  def solve_adaptive(self, psi_0: Field, z_end: float | None = None, **kwargs):
+    """Host-controlled step doubling; see src.adaptive.adaptive_solve.
+
+    Returns AdaptiveResult with exact output coordinates and step statistics.
+    Use solve for JIT, batching, and differentiable fixed-step propagation.
+    """
+    from .adaptive import adaptive_solve
+    return adaptive_solve(self, psi_0, z_end, **kwargs)
+
   def solve(
     self,
     psi_0: Field,
