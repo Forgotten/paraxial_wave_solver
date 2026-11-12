@@ -33,3 +33,6 @@ pip-delete-this-directory.txt
 # Coverage
 .coverage
 htmlcov/
+
+# Local planning / notes
+ENHANCEMENT_PLAN.md
