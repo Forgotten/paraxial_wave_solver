@@ -35,6 +35,15 @@ def test_reference_is_finite_and_absorption_passive(case, x64):
     assert np.linalg.norm(exact) == pytest.approx(np.linalg.norm(initial), rel=1e-11)
 
 
-def test_incompatible_physics_rejected():
+def test_incompatible_physics_rejected(x64):
   with pytest.raises(ValueError, match='model'):
     benchmark.run_case('kerr', steppers=('pade',))
+
+
+def test_magnus_action_counts_and_accuracy(x64):
+  fixed = benchmark.run_case(counts=(8,), steppers=('magnus4',), repeats=1,
+                             exponential_backend='fixed_taylor')[0]
+  adaptive = benchmark.run_case(counts=(8,), steppers=('magnus4',), repeats=1)[0]
+  assert fixed['fft_calls'] == 8*2*24*2
+  assert adaptive['fft_calls'] < fixed['fft_calls']
+  assert abs(adaptive['relative_error']-fixed['relative_error']) < 1e-12

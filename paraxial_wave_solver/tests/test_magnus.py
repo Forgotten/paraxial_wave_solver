@@ -10,21 +10,23 @@ from scipy.integrate import solve_ivp
 from scipy.linalg import expm
 
 import paraxial_wave_solver as pws
-from paraxial_wave_solver.src.magnus import exponential_action
+from paraxial_wave_solver.src.magnus import exponential_action, exponential_plan
 
 
 @pytest.mark.parametrize('scale', [.1, 3., 20.])
-def test_exponential_action_against_dense_nonnormal_matrix(scale, x64):
+@pytest.mark.parametrize('backend', ['adaptive_taylor', 'fixed_taylor'])
+def test_exponential_action_against_dense_nonnormal_matrix(scale, backend, x64):
   matrix = scale*np.array([[-1., 2j, 0.], [0., -.3, 1.], [0., 0., -2.]])
   field = jnp.array([1., 2j, -.3])
   actual = exponential_action(lambda u: jnp.asarray(matrix)@u, field,
-                              np.linalg.norm(matrix, 2))
+                              np.linalg.norm(matrix, 2), backend=backend)
   np.testing.assert_allclose(actual, expm(matrix)@field, atol=2e-13, rtol=2e-12)
 
 
 def test_exponential_capacity_and_zero(x64):
   field = jnp.ones(4, dtype=complex)
-  assert np.all(np.isnan(exponential_action(lambda u: u, field, 3., 2)))
+  assert np.all(np.isnan(exponential_action(
+    lambda u: u, field, 3., 2, backend='fixed_taylor')))
   np.testing.assert_array_equal(exponential_action(lambda u: 0*u, field, 0.), field)
   np.testing.assert_array_equal(exponential_action(lambda u: u, 0*field, 1.), 0)
 
@@ -98,3 +100,44 @@ def test_magnus_rejects_nonlinear_and_stretched_models():
     pws.ParaxialWaveSolver(sim, sc, pws.PMLConfig(1, 1, use_complex_stretching=True))
   with pytest.raises(ValueError, match='exponential_max_substeps'):
     pws.SolverConfig(method='spectral', stepper='magnus4', exponential_max_substeps=0)
+
+
+def test_selected_cost_and_remainder_budget(x64):
+  import math
+
+  for bound in (.01, .1, 1., 3., 20., 100.):
+    plan = exponential_plan(bound)
+    fixed = exponential_plan(bound, backend='fixed_taylor')
+    assert plan.valid
+    assert int(plan.operator_evaluations) < int(fixed.operator_evaluations)
+    theta = bound/int(plan.substeps)
+    tail = (math.exp(theta)*theta**(int(plan.degree)+1)
+            / math.factorial(int(plan.degree)+1))
+    assert tail <= 1e-12/256*(1+1e-12)
+  assert not exponential_plan(1e10, max_substeps=1).valid
+  assert exponential_plan(0.).operator_evaluations == 0
+
+
+def test_action_tolerance_refinement(x64):
+  matrix = jnp.array([[0., 1j], [1j, 0.]])
+  field = jnp.array([1., .3j])
+  exact = expm(np.asarray(matrix))@field
+  errors = []
+  for tolerance in (1e-2, 1e-6, 1e-12):
+    result = exponential_action(lambda v: matrix@v, field, 1., 1, rtol=tolerance)
+    errors.append(np.linalg.norm(np.asarray(result)-exact))
+  assert np.all(np.diff(errors) < 0), errors
+  assert errors[-1] < 1e-12 and errors[-1] < errors[0]/1000, errors
+
+
+def test_action_selection_gradient_and_float32(x64):
+  field = jnp.array([1., .3j])
+  def objective(a):
+    return jnp.real(exponential_action(lambda v: 1j*a*v, field, jnp.abs(a))[0])
+  assert float(jax.grad(objective)(1.3)) == pytest.approx(-np.sin(1.3), abs=1e-12)
+  field32 = jnp.ones(4, dtype=jnp.complex64)
+  actual = exponential_action(lambda v: 2j*v, field32, jnp.float32(2), rtol=1e-6)
+  np.testing.assert_allclose(actual, np.exp(2j), atol=2e-6)
+  for kwargs in ({'exponential_rtol': 0}, {'exponential_backend': 'unknown'}):
+    with pytest.raises(ValueError):
+      pws.SolverConfig(method='spectral', stepper='magnus4', **kwargs)

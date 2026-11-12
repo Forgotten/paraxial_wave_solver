@@ -664,6 +664,8 @@ class ParaxialWaveSolver:
         self._step_fn = make_magnus_kernel(
           laplacian_fn, delta_n_fn, has_pml,
           solver_config.exponential_max_substeps,
+          rtol=solver_config.exponential_rtol,
+          backend=solver_config.exponential_backend,
         )
       elif solver_config.stepper == 'rk4':
         self._step_fn = _make_rk4_kernel(

@@ -895,6 +895,8 @@ split-step; `helmholtz` requires `stepper='pade'` or `stepper='lanczos'`.
 | `linear_restart` | `20` | Krylov dimension per cycle |
 | `pade_order` | `4` | Rational degree, 1–6 |
 | `pade_rotation` | `pi/6` | Branch rotation, strictly between 0 and pi |
+| `exponential_backend` | `'adaptive_taylor'` | Cost-selected degree/scaling; `'fixed_taylor'` retains the original action |
+| `exponential_rtol` | `1e-12` | Local Taylor-tail budget, not a global error guarantee |
 | `exponential_max_substeps` | `256` | Maximum scaled Taylor actions per Magnus exponential |
 | `krylov_dim` | `32` | Maximum Hermitian Lanczos basis size |
 | `krylov_rtol` | `1e-6` | Nested-subspace refinement indicator tolerance |
@@ -983,6 +985,7 @@ Run these after `pip install -e .`:
 
 | Script | What it does |
 |---|---|
+| `magnus_actions.py` | Fixed versus selected Taylor work, accuracy, and warm runtime |
 | `medium_interpolation.py` | Sample refinement and one-sided layered-medium propagation |
 | `collocation_convergence.py` | Gauss-4 and Radau-5 convergence against a reference ODE |
 | `solver_benchmarks.py` | Independent accuracy references, synchronized runtime, compiler memory, and matched-error reports |

@@ -16,6 +16,7 @@ from scipy.integrate import solve_ivp
 from scipy.linalg import eigh
 
 import paraxial_wave_solver as pws
+from paraxial_wave_solver.src.magnus import exponential_plan
 
 CASES = ('smooth', 'kerr', 'absorption', 'near_cutoff')
 
@@ -56,7 +57,8 @@ def problem(case, n=6):
   return sim, initial, medium, exact
 
 
-def run_case(case='smooth', counts=(8, 16, 32), steppers=None, repeats=3, n=6):
+def run_case(case='smooth', counts=(8, 16, 32), steppers=None, repeats=3, n=6,
+             exponential_backend='adaptive_taylor'):
   """Collects refinement rows; failures remain visible rather than ranked."""
   if repeats < 1 or not counts or any(c < 1 or int(c) != c for c in counts):
     raise ValueError('Require positive repeats and integer step counts.')
@@ -77,7 +79,7 @@ def run_case(case='smooth', counts=(8, 16, 32), steppers=None, repeats=3, n=6):
       sc = pws.SolverConfig(
         method='spectral', stepper=stepper, linear_rtol=1e-12,
         propagator='helmholtz' if case == 'near_cutoff' else 'paraxial',
-        krylov_dim=n*n, pade_order=6,
+        krylov_dim=n*n, pade_order=6, exponential_backend=exponential_backend,
       )
       def index(z, data):
         return data if case == 'near_cutoff' else data*jnp.cos(z)
@@ -99,6 +101,24 @@ def run_case(case='smooth', counts=(8, 16, 32), steppers=None, repeats=3, n=6):
       finite = bool(np.all(np.isfinite(final)))
       memory = compiled.memory_analysis()
       fft_per_step = {'split_step': 2, 'rk4': 8, 'etdrk4': 10}.get(stepper)
+      fft_calls = None if fft_per_step is None else fft_per_step*nz
+      if stepper == 'magnus4':
+        def cost(z, obj=solver, config=sc, step=sim.dz, k0=sim.k0, n0=sim.n0,
+                 samples=data):
+          a, b = (3-2*3**.5)/12, (3+2*3**.5)/12
+          first = samples*jnp.cos(z+step*(.5-3**.5/6))
+          second = samples*jnp.cos(z+step*(.5+3**.5/6))
+          costs = []
+          for local in (b*first+a*second, a*first+b*second):
+            bound = step*(obj._operators['laplacian_bound']/(4*k0*n0)
+                          + jnp.max(jnp.abs(1j*k0*local)))
+            plan = exponential_plan(bound, config.exponential_max_substeps,
+                                    rtol=config.exponential_rtol,
+                                    backend=config.exponential_backend)
+            costs.append(plan.operator_evaluations)
+          return sum(costs)
+        # Planned matvec counts are computed separately, never inside timing.
+        fft_calls = 2*int(jnp.sum(jax.vmap(cost)(sim.dz*jnp.arange(nz))))
       rows.append(dict(
         case=case, stepper=stepper, nz=int(nz), n=n,
         relative_error=(float(np.linalg.norm(np.asarray(final)-exact)
@@ -108,7 +128,8 @@ def run_case(case='smooth', counts=(8, 16, 32), steppers=None, repeats=3, n=6):
         temp_bytes=None if memory is None else memory.temp_size_in_bytes,
         argument_bytes=None if memory is None else memory.argument_size_in_bytes,
         output_bytes=None if memory is None else memory.output_size_in_bytes,
-        fft_calls=None if fft_per_step is None else fft_per_step*nz,
+        fft_calls=fft_calls,
+        exponential_backend=exponential_backend if stepper == 'magnus4' else None,
       ))
   return rows
 

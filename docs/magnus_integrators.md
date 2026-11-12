@@ -22,19 +22,34 @@ included in the generator, without an order-reducing absorber split. The
 negative combination coefficient means strongly varying absorption does not
 have an unconditional contractivity guarantee at intermediate stages.
 
-Each exponential action uses 24 Taylor terms and repeated scaled actions with
-an induced 2-norm bound of at most one. The spectral Laplacian bound is the
-largest transverse squared wavenumber; periodic FD uses the absolute stencil
-row sum. No dense transverse matrix is built. The fixed maximum loop length
-preserves JAX reverse-mode differentiation, including physical parameter and
-medium overrides. Integer scaling decisions are treated as constant by AD.
+The default `exponential_backend='adaptive_taylor'` chooses a Taylor degree
+from 8, 12, 16, 20, and 24 and a number of repeated scaled actions. It minimizes
+the planned operator-vector count subject to a per-action operator-tail budget
+of `exponential_rtol / exponential_max_substeps`. The bound used is
+`exp(theta)*theta**(m+1)/(m+1)!`, with `theta >= ||B/s||_2`. Defaults are
+`exponential_rtol=1e-12` and `exponential_max_substeps=256`.
 
-`exponential_max_substeps=256` bounds the number of scaled actions **per
-exponential**. Exceeding it returns NaNs rather than an unchecked approximation;
-reduce `dz` or increase the limit. This conservative algorithm can be expensive
-on fine grids. It does not promise exact norm conservation at floating-point
-precision. Its Taylor truncation is below roundoff at float64 for the scaled
-bound; roundoff and nonnormal amplification can still limit accuracy.
+The spectral Laplacian bound is the largest transverse squared wavenumber;
+periodic FD uses the absolute stencil row sum. No dense transverse matrix is
+built. `exponential_plan` returns the degree, repeated actions, matvec count,
+and capacity validity for diagnostics. A zero norm requires no operator actions.
+
+This is a local truncation budget, **not a certified final relative error**:
+errors can accumulate and be amplified, and float32 cannot meet float64-level
+accuracy merely by tightening a Taylor budget. Integer selections are held
+constant under AD. Fixed bounded loops and branches preserve reverse-mode
+propagation through the selected polynomials.
+
+Set `exponential_backend='fixed_taylor'` to retain the original 24-term method
+at norm <= 1; this backend ignores `exponential_rtol`. Both backends return NaNs
+when the available scaling capacity is insufficient. Reduce dz or raise
+`exponential_max_substeps`. The selected implementation is conservative: it
+uses an operator-norm tail bound, not the more sophisticated power-norm estimates
+in [Al-Mohy and Higham's exponential-action algorithm](https://eprints.maths.manchester.ac.uk/1591/).
+
+Run `python examples/magnus_actions.py` to compare work counts, accuracy, and
+synchronized runtime. Runtime improvements depend on problem size and hardware;
+unit tests enforce accuracy and reduced work, not a timing threshold.
 
 Run `python examples/magnus_convergence.py` for a DOP853-reference convergence
 study. Tests also cover spectral and FD discretizations with absorption/PML,

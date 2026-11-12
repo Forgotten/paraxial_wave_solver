@@ -223,6 +223,10 @@ class SolverConfig:
                    depends on this value and the discrete operator spectrum.
     krylov_dim: Maximum dimension of the reorthogonalized Lanczos space.
     krylov_rtol: Relative nested-space indicator tolerance (not an error bound).
+    exponential_backend: 'adaptive_taylor' selects degree/scaling by cost;
+                         'fixed_taylor' retains 24 terms at norm <= 1.
+    exponential_rtol: Taylor-tail budget for adaptive Magnus actions, not a
+                      guaranteed final relative propagation error.
     exponential_max_substeps: Maximum scaled Taylor substeps per Magnus
                               exponential action; insufficient capacity returns NaNs.
     linear_rtol: Required relative residual for implicit solves.
@@ -243,6 +247,8 @@ class SolverConfig:
   pade_rotation: float = math.pi / 6
   krylov_dim: int = 32
   krylov_rtol: float = 1e-6
+  exponential_backend: Literal['adaptive_taylor', 'fixed_taylor'] = 'adaptive_taylor'
+  exponential_rtol: float = 1e-12
   exponential_max_substeps: int = 256
   linear_rtol: float = 1e-6
   linear_maxiter: int = 50
@@ -302,6 +308,10 @@ class SolverConfig:
       raise ValueError("pade_rotation must lie strictly between zero and pi.")
     if not 0 < self.linear_rtol < 1:
       raise ValueError("linear_rtol must lie strictly between zero and one.")
+    if self.exponential_backend not in ('adaptive_taylor', 'fixed_taylor'):
+      raise ValueError('Unknown exponential_backend.')
+    if not 0 < self.exponential_rtol < 1:
+      raise ValueError('exponential_rtol must lie between zero and one.')
     if not 0 < self.krylov_rtol < 1:
       raise ValueError('krylov_rtol must lie between zero and one.')
     for name in ('linear_maxiter', 'linear_restart', 'exponential_max_substeps',

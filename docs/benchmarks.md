@@ -21,7 +21,8 @@ Compilation is measured separately. Execution is warmed, synchronized, and
 reported as a median. Compiler-reported temporary, argument, and output buffer
 sizes are recorded separately; they are not process RSS or measured peak device
 memory. Unsupported memory reports are null. FFT counts are static counts for
-RK4, ETDRK4, and Strang; iterative and data-dependent action counts are null,
+RK4, ETDRK4, and Strang; Magnus counts use the selected action plans evaluated
+outside the timed region. Other iterative action counts are null,
 not guesses. Timings exclude diagnostic instrumentation and reference solves.
 Hardware, JAX version, and devices are saved with the report. Do not compare
 unsynchronized timings or enforce speed thresholds in unit tests.
