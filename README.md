@@ -9,6 +9,8 @@ atmospheric or underwater turbulence.
 
 ## Documentation
 
+- [Accuracy-versus-cost benchmarks](docs/benchmarks.md)
+
 - [Hermitian square-root actions](docs/square_root_actions.md)
 - [Magnus-4 propagation](docs/magnus_integrators.md)
 - [Adaptive propagation](docs/adaptive_stepping.md)
@@ -977,6 +979,7 @@ Run these after `pip install -e .`:
 
 | Script | What it does |
 |---|---|
+| `solver_benchmarks.py` | Independent accuracy references, synchronized runtime, compiler memory, and matched-error reports |
 | `square_root_actions.py` | Krylov dimension refinement and dense full-index reference |
 | `magnus_convergence.py` | Magnus-4 convergence against an independent ODE reference |
 | `adaptive_propagation.py` | Adaptive tolerance refinement against an analytic solution |
