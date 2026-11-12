@@ -185,7 +185,9 @@ class SolverConfig:
     compact: Use the isotropic compact 9-point stencil. Requires
              method='finite_difference' and dx == dy.
     stepper: 'rk4', 'split_step', 'crank_nicolson', 'pade', 'etdrk4',
-             'magnus4', or 'lanczos'. Lanczos applies the full-index Helmholtz
+             'magnus4', 'lanczos', 'gauss4', or 'radau5'. The collocation
+             steppers require n2=0 and support FD stretching. Lanczos applies
+             the full-index Helmholtz
              root in a Hermitian Krylov subspace. Magnus requires linear
              paraxial physics and uses
              two Gauss-node samples with matrix-free exponential actions.
@@ -231,7 +233,8 @@ class SolverConfig:
   fd_order: int = 2
   compact: bool = False
   stepper: Literal[
-    'rk4', 'split_step', 'crank_nicolson', 'pade', 'etdrk4', 'magnus4', 'lanczos'
+    'rk4', 'split_step', 'crank_nicolson', 'pade', 'etdrk4', 'magnus4',
+    'lanczos', 'gauss4', 'radau5'
   ] = 'rk4'
   splitting_order: int = 2
   propagator: Literal['paraxial', 'wide_angle', 'helmholtz'] = 'paraxial'
@@ -252,10 +255,11 @@ class SolverConfig:
         "or 'spectral'."
       )
     if self.stepper not in ('rk4', 'split_step', 'crank_nicolson', 'pade',
-                            'etdrk4', 'magnus4', 'lanczos'):
+                            'etdrk4', 'magnus4', 'lanczos', 'gauss4', 'radau5'):
       raise ValueError(
         f"Unsupported stepper {self.stepper!r}; expected 'rk4' or "
-        "'split_step', 'crank_nicolson', 'pade', 'etdrk4', 'magnus4', or 'lanczos'."
+        "'split_step', 'crank_nicolson', 'pade', 'etdrk4', 'magnus4', "
+        "'lanczos', 'gauss4', or 'radau5'."
       )
     if self.stepper == 'etdrk4' and self.method != 'spectral':
       raise ValueError("stepper='etdrk4' requires method='spectral'.")

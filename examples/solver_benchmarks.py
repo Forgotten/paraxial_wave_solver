@@ -64,7 +64,8 @@ def run_case(case='smooth', counts=(8, 16, 32), steppers=None, repeats=3, n=6):
   base, initial, medium, exact = problem(case, n)
   allowed = (('pade', 'lanczos') if case == 'near_cutoff' else
              ('split_step', 'rk4', 'etdrk4') if case == 'kerr' else
-             ('split_step', 'rk4', 'etdrk4', 'crank_nicolson', 'magnus4'))
+             ('split_step', 'rk4', 'etdrk4', 'crank_nicolson', 'magnus4',
+              'gauss4', 'radau5'))
   steppers = allowed if steppers is None else steppers
   if any(s not in allowed for s in steppers):
     raise ValueError('Selected stepper does not solve this benchmark model.')

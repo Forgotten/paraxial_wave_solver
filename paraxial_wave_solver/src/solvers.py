@@ -59,6 +59,7 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 
+from .collocation import collocation_tableau, make_collocation_kernel
 from .config import (
   SPLITTING_ORDERS,
   Field,
@@ -593,7 +594,8 @@ class ParaxialWaveSolver:
         f"ny={sim_config.ny}; it must be smaller than ny / 2."
       )
 
-    if (solver_config.stepper in ('crank_nicolson', 'pade', 'magnus4', 'lanczos')
+    if (solver_config.stepper in ('crank_nicolson', 'pade', 'magnus4', 'lanczos',
+                                  'gauss4', 'radau5')
         and sim_config.n2 != 0):
       raise ValueError("Linear steppers require n2=0.")
     if solver_config.stepper == 'magnus4' and pml_config.use_complex_stretching:
@@ -650,7 +652,11 @@ class ParaxialWaveSolver:
       laplacian_fn = _make_laplacian_fn(
         solver_config, sim_config, use_stretch
       )
-      if solver_config.stepper == 'lanczos':
+      if solver_config.stepper in ('gauss4', 'radau5'):
+        self._step_fn = make_collocation_kernel(
+          solver_config, laplacian_fn, delta_n_fn, has_pml and not use_stretch,
+        )
+      elif solver_config.stepper == 'lanczos':
         self._step_fn = make_lanczos_kernel(
           solver_config, laplacian_fn, delta_n_fn,
         )
@@ -740,6 +746,17 @@ class ParaxialWaveSolver:
           reference = _make_laplacian_fn(solver_config, sim_config, False)
           bound = jnp.sum(jnp.abs(reference(delta, {})))
         operators['laplacian_bound'] = bound
+      if solver_config.stepper in ('gauss4', 'radau5'):
+        if solver_config.method == 'spectral':
+          symbol = -(operators['kx']**2 + operators['ky']**2)
+        else:
+          delta = jnp.zeros((sim_config.nx, sim_config.ny)).at[0, 0].set(1)
+          reference = _make_laplacian_fn(solver_config, sim_config, False)
+          symbol = jnp.fft.fft2(reference(delta, {})).real
+        a, _, _ = collocation_tableau(solver_config.stepper)
+        generator = 1j*symbol/(2*k0*n0)
+        block = jnp.eye(a.shape[0])-dz*generator[..., None, None]*a
+        operators['irk_inverse'] = jnp.linalg.inv(block)
       if solver_config.stepper in ('crank_nicolson', 'pade'):
         # The periodic constant-coefficient reference is diagonal in Fourier
         # space even for FD. Applying its stencil to a delta computes exactly

@@ -9,6 +9,8 @@ atmospheric or underwater turbulence.
 
 ## Documentation
 
+- [Gauss-4 and Radau-5](docs/collocation_integrators.md)
+
 - [Accuracy-versus-cost benchmarks](docs/benchmarks.md)
 
 - [Hermitian square-root actions](docs/square_root_actions.md)
@@ -271,6 +273,7 @@ Choose the physical model and boundary treatment first, then the stepper:
 | `etdrk4` / `paraxial` | Spectral | Real/complex index; Kerr | Absorbing potential | Order 4 for smooth problems; local terms remain explicit |
 | `rk4` / `paraxial` | Spectral or FD | Real/complex index; Kerr | Absorbing potential; FD stretching | Order 4 in z for smooth problems; conditional stability |
 | `crank_nicolson` / `paraxial` | Spectral or FD | Real/complex index; `n2=0` | Absorbing potential; FD stretching | Order 2 in z; iterative solves and phase accuracy limit useful steps |
+| `gauss4`, `radau5` / `paraxial` | Spectral or FD | Real/complex index; `n2=0` | Absorbing potential; FD stretching | Orders 4 and 5; coupled residual-checked stage solves |
 | `magnus4` / `paraxial` | Spectral or FD | Real/complex index; `n2=0` | Absorbing potential | Order 4 for smooth range variation; bounded scaled exponential actions |
 | `lanczos` / `helmholtz` | Spectral or FD | Real index; `n2=0` | Periodic, no absorber | Krylov dimension refinement plus order-2 midpoint sampling; forward use only |
 | `pade` / `helmholtz` | Spectral or FD | Real index; `n2=0` | Periodic, no absorber | Experimental full-index root; float64 required; rational and midpoint errors must be checked separately |
@@ -512,8 +515,7 @@ interface. Existing default methods are unchanged.
 | Corrected examples | Intensity plots use squared amplitude; the tilted paraxial reference uses `qx/k` drift; turbulence diagnostics use a reference at the same plane and include the final plane |
 
 The convergence examples and regression tests cover these additions. Nonperiodic
-discretizations, rational Krylov/AAA actions, and implicit Gauss/Radau methods
-remain planned extensions.
+discretizations and rational Krylov/AAA actions remain planned extensions.
 
 ## Usage
 
@@ -874,7 +876,7 @@ Derived properties: `k0` (vacuum wavenumber), `k` (`2*pi*n0/wavelength`), and
 | Field | Values | Meaning |
 |---|---|---|
 | `method` | `'spectral'`, `'finite_difference'` | Spatial discretization |
-| `stepper` | `'rk4'`, `'split_step'`, `'crank_nicolson'`, `'pade'`, `'etdrk4'`, `'magnus4'`, `'lanczos'` | z-propagation scheme |
+| `stepper` | `'rk4'`, `'split_step'`, `'crank_nicolson'`, `'pade'`, `'etdrk4'`, `'magnus4'`, `'lanczos'`, `'gauss4'`, `'radau5'` | z-propagation scheme |
 | `fd_order` | `2`, `4`, `6` | Finite difference accuracy |
 | `compact` | `bool` | Isotropic 9-point stencil; requires `dx == dy` |
 | `splitting_order` | `2`, `4` | Strang, or a Yoshida composition |
@@ -979,6 +981,7 @@ Run these after `pip install -e .`:
 
 | Script | What it does |
 |---|---|
+| `collocation_convergence.py` | Gauss-4 and Radau-5 convergence against a reference ODE |
 | `solver_benchmarks.py` | Independent accuracy references, synchronized runtime, compiler memory, and matched-error reports |
 | `square_root_actions.py` | Krylov dimension refinement and dense full-index reference |
 | `magnus_convergence.py` | Magnus-4 convergence against an independent ODE reference |

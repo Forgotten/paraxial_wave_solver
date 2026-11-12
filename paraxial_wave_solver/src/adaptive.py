@@ -75,7 +75,8 @@ def adaptive_solve(
 ) -> AdaptiveResult:
   """Propagates to z_end using local step-doubling error control.
 
-  Supports RK4, ETDRK4, Magnus-4, CN, and unfiltered split-step propagation. Output
+  Supports explicit, Magnus, collocation, CN, and unfiltered split-step methods.
+  Output
   planes are hit exactly (no interpolation); the final plane is always saved.
   The initial trial size is SimulationConfig.dz, clipped to configured bounds.
   params accepts k0/n0 overrides; dz is owned by the controller. Neither this
@@ -83,11 +84,13 @@ def adaptive_solve(
   """
   cfg = config or AdaptiveConfig()
   sc = solver.solver_config
-  if sc.stepper not in ('rk4', 'etdrk4', 'magnus4', 'crank_nicolson', 'split_step'):
+  if sc.stepper not in ('rk4', 'etdrk4', 'magnus4', 'crank_nicolson', 'split_step',
+                        'gauss4', 'radau5'):
     raise ValueError('Adaptive stepping requires a supported paraxial stepper.')
   if sc.dealias:
     raise ValueError('Adaptive step doubling does not support dealias filtering.')
-  order = 4 if sc.stepper in ('rk4', 'etdrk4', 'magnus4') else 2
+  order = {'rk4': 4, 'etdrk4': 4, 'magnus4': 4, 'gauss4': 4,
+           'radau5': 5}.get(sc.stepper, 2)
   if sc.stepper == 'split_step' and not solver._has_pml:
     order = sc.splitting_order
   params = dict(params or {})
