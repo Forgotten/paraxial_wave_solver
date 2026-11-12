@@ -780,6 +780,11 @@ class ParaxialWaveSolver:
         operators['inverse_reference'] = 1 / denominator
     return operators
 
+  def solve_segments(self, psi_0: Field, boundaries, media, **kwargs):
+    """March separate media on closed intervals; see sampled_media.solve_segments."""
+    from .sampled_media import solve_segments
+    return solve_segments(self, psi_0, boundaries, media, **kwargs)
+
   def solve_adaptive(self, psi_0: Field, z_end: float | None = None, **kwargs):
     """Host-controlled step doubling; see src.adaptive.adaptive_solve.
 

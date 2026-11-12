@@ -32,7 +32,8 @@ Yoshida with an outer absorber uses a second-order estimator. Local error
 control does not guarantee global error or stability. Smooth medium callbacks
 are required: split calls at known discontinuities, with a callback appropriate
 to each interval; merely requesting an output at a jump is insufficient for
-methods sampling that endpoint.
+methods sampling that endpoint. Use [solve_segments](sampled_media.md) for
+separate one-sided media; use `stop_z` for mandatory continuous-medium knot stops.
 
 Output planes are reached exactly by shortening steps, without interpolation.
 Only requested planes and the final field are saved; the final plane is always

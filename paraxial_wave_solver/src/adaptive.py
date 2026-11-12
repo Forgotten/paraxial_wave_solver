@@ -71,13 +71,16 @@ def _trial(solver, field, z, h, medium, params):
 def adaptive_solve(
   solver, psi_0: Field, z_end: float | None = None, *, z_0: float = 0.,
   medium: Any = None, config: AdaptiveConfig | None = None,
-  save_z: Any = None, params: dict[str, Any] | None = None,
+  save_z: Any = None, stop_z: Any = None,
+  params: dict[str, Any] | None = None,
 ) -> AdaptiveResult:
   """Propagates to z_end using local step-doubling error control.
 
   Supports explicit, Magnus, collocation, CN, and unfiltered split-step methods.
   Output
   planes are hit exactly (no interpolation); the final plane is always saved.
+  stop_z adds mandatory step boundaries without saving extra fields. For
+  discontinuous media use solve_segments to resolve endpoint-side semantics.
   The initial trial size is SimulationConfig.dz, clipped to configured bounds.
   params accepts k0/n0 overrides; dz is owned by the controller. Neither this
   host loop nor its accept/reject decisions support jit, vmap, or gradients.
@@ -107,6 +110,12 @@ def adaptive_solve(
     raise ValueError('save_z must be increasing finite planes within the interval.')
   if not len(planes) or planes[-1] != end:
     planes = np.append(planes, end)
+  stops = np.asarray([] if stop_z is None else stop_z, dtype=float)
+  if (stops.ndim != 1 or not np.all(np.isfinite(stops))
+      or np.any(np.diff(stops) <= 0) or np.any(stops < z) or np.any(stops > end)):
+    raise ValueError('stop_z must be increasing finite planes within the interval.')
+  targets = np.union1d(planes, stops)
+  save_set = set(planes.tolist())
   field = jnp.asarray(psi_0)
   if field.shape != (solver.sim_config.nx, solver.sim_config.ny):
     raise ValueError('psi_0 must match the transverse grid.')
@@ -116,7 +125,7 @@ def adaptive_solve(
   h = min(cfg.max_step, max(cfg.min_step, solver.sim_config.dz))
   steps, saved = [], []
   rejected = 0
-  for target in planes:
+  for target in targets:
     while z < target:
       if len(steps) + rejected >= cfg.max_steps:
         raise RuntimeError('Adaptive maximum attempted step count exceeded.')
@@ -143,6 +152,7 @@ def adaptive_solve(
       if not accepted:
         factor = min(1., factor)
       h = min(cfg.max_step, max(cfg.min_step, h*factor))
-    saved.append(field)
+    if target in save_set:
+      saved.append(field)
   return AdaptiveResult(field, planes, jnp.stack(saved), np.asarray(steps),
                         len(steps), rejected)

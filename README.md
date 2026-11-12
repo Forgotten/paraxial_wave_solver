@@ -9,6 +9,8 @@ atmospheric or underwater turbulence.
 
 ## Documentation
 
+- [Sampled media and range interfaces](docs/sampled_media.md)
+
 - [Gauss-4 and Radau-5](docs/collocation_integrators.md)
 
 - [Accuracy-versus-cost benchmarks](docs/benchmarks.md)
@@ -981,6 +983,7 @@ Run these after `pip install -e .`:
 
 | Script | What it does |
 |---|---|
+| `medium_interpolation.py` | Sample refinement and one-sided layered-medium propagation |
 | `collocation_convergence.py` | Gauss-4 and Radau-5 convergence against a reference ODE |
 | `solver_benchmarks.py` | Independent accuracy references, synchronized runtime, compiler memory, and matched-error reports |
 | `square_root_actions.py` | Krylov dimension refinement and dense full-index reference |

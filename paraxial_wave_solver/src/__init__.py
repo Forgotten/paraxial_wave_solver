@@ -27,6 +27,7 @@ from .diagnostics import (
 from .ensemble import ensemble_solve, ensemble_standard_error
 from .krylov import KrylovResult, square_root_action
 from .pml import PMLData, StretchFields, generate_pml_profile
+from .sampled_media import SampledMedium, make_sampled_medium, sample_medium
 from .solvers import ParaxialWaveSolver, propagate
 from .utils import (
   gaussian_beam,
@@ -55,6 +56,9 @@ def enable_x64(enable: bool = True) -> None:
 
 
 __all__ = [
+  "SampledMedium",
+  "make_sampled_medium",
+  "sample_medium",
   "KrylovResult",
   "square_root_action",
   "AdaptiveConfig",
